@@ -386,13 +386,14 @@ export const productService = {
       return { data: newProduct, error: null };
     }
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return { data: null, error: "Tidak terautentikasi" };
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        return { data: null, error: "Sesi login Anda tidak aktif. Silakan login kembali." };
+      }
 
-    const isBundle = formData.type === "bundle";
-    const { data, error } = await supabase
-      .from("products")
-      .insert({
+      const isBundle = formData.type === "bundle";
+      const fullPayload: any = {
         user_id: user.id,
         name: formData.name.trim(),
         description: formData.description?.trim() || null,
@@ -402,14 +403,57 @@ export const productService = {
         stock: Number(formData.stock) || 0,
         tier_pricing: isBundle ? [] : (formData.tier_pricing || []),
         bundle_items: isBundle ? (formData.bundle_items || []) : [],
-      })
-      .select()
-      .single();
+      };
 
-    if (error) {
-      return { data: null, error: error.message.includes("duplicate") ? "Produk sudah ada" : "Gagal menambahkan produk" };
+      const { data, error } = await supabase
+        .from("products")
+        .insert(fullPayload)
+        .select()
+        .single();
+
+      if (error) {
+        console.warn("Supabase full insert error, trying fallback:", error);
+
+        // Fallback: If 'type', 'tier_pricing', or 'bundle_items' columns are not yet in user's Supabase DB
+        if (
+          error.message.includes("column") ||
+          error.message.includes("does not exist") ||
+          error.code === "42703" ||
+          error.code === "PGRST204"
+        ) {
+          const basicPayload = {
+            user_id: user.id,
+            name: formData.name.trim(),
+            description: formData.description?.trim() || null,
+            purchase_price: Number(formData.purchase_price) || 0,
+            selling_price: Number(formData.selling_price) || 0,
+            stock: Number(formData.stock) || 0,
+          };
+
+          const { data: fbData, error: fbError } = await supabase
+            .from("products")
+            .insert(basicPayload)
+            .select()
+            .single();
+
+          if (fbError) {
+            return { data: null, error: fbError.message };
+          }
+          return { data: fbData as Product, error: null };
+        }
+
+        if (error.message.includes("duplicate") || error.code === "23505") {
+          return { data: null, error: "Nama produk sudah ada." };
+        }
+
+        return { data: null, error: error.message };
+      }
+
+      return { data: data as Product, error: null };
+    } catch (e: unknown) {
+      const err = e as Error;
+      return { data: null, error: err?.message || "Gagal menambahkan produk" };
     }
-    return { data: data as Product, error: null };
   },
 
   async update(id: string, updates: Partial<ProductFormData>): Promise<{ error: string | null }> {
@@ -426,11 +470,50 @@ export const productService = {
       return { error: null };
     }
 
-    const { error } = await supabase
-      .from("products")
-      .update({ ...updates, updated_at: new Date().toISOString() })
-      .eq("id", id);
-    return { error: error ? "Gagal memperbarui produk" : null };
+    try {
+      const isBundle = updates.type === "bundle";
+      const fullPayload: any = {
+        ...updates,
+        purchase_price: updates.purchase_price !== undefined ? Number(updates.purchase_price) : undefined,
+        selling_price: updates.selling_price !== undefined ? Number(updates.selling_price) : undefined,
+        stock: updates.stock !== undefined ? Number(updates.stock) : undefined,
+        tier_pricing: isBundle ? [] : updates.tier_pricing,
+        bundle_items: isBundle ? updates.bundle_items : [],
+        updated_at: new Date().toISOString(),
+      };
+
+      // Strip undefined keys
+      Object.keys(fullPayload).forEach((key) => fullPayload[key] === undefined && delete fullPayload[key]);
+
+      const { error } = await supabase
+        .from("products")
+        .update(fullPayload)
+        .eq("id", id);
+
+      if (error) {
+        console.warn("Supabase full update error, trying fallback:", error);
+        if (
+          error.message.includes("column") ||
+          error.message.includes("does not exist") ||
+          error.code === "42703" ||
+          error.code === "PGRST204"
+        ) {
+          const { type, tier_pricing, bundle_items, ...basicPayload } = fullPayload;
+          const { error: fbErr } = await supabase
+            .from("products")
+            .update(basicPayload)
+            .eq("id", id);
+
+          if (fbErr) return { error: fbErr.message };
+          return { error: null };
+        }
+        return { error: error.message };
+      }
+      return { error: null };
+    } catch (e: unknown) {
+      const err = e as Error;
+      return { error: err?.message || "Gagal memperbarui produk" };
+    }
   },
 
   async delete(id: string): Promise<{ error: string | null }> {

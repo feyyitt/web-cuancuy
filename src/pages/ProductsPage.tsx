@@ -227,8 +227,12 @@ export function ProductsPage() {
       const res = await productService.create(formData);
       if (res.error) {
         toast.error(res.error);
-      } else if (res.data) {
-        addProduct(res.data);
+      } else {
+        if (res.data) {
+          addProduct(res.data);
+        } else {
+          loadProducts();
+        }
         toast.success(`Produk "${formData.name}" berhasil ditambahkan`);
         setIsAddModalOpen(false);
       }
