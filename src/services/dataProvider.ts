@@ -2,6 +2,8 @@ import { supabase, isMissingCredentials } from "@/lib/supabase/client";
 import type {
   Product,
   ProductFormData,
+  TierPricing,
+  BundleItem,
   Sale,
   CapitalTransaction,
   CapitalFormData,
@@ -346,6 +348,33 @@ export const authService = {
   },
 };
 
+// Extension persistence cache so bundling and tier pricing are NEVER lost across sessions
+const PRODUCT_EXT_CACHE_KEY = "cuancuy_product_extensions";
+
+function getProductExtensions(): Record<string, { type?: "single" | "bundle"; tier_pricing?: TierPricing[]; bundle_items?: BundleItem[] }> {
+  try {
+    const raw = localStorage.getItem(PRODUCT_EXT_CACHE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveProductExtension(
+  id: string,
+  name: string | undefined,
+  ext: { type?: "single" | "bundle"; tier_pricing?: TierPricing[]; bundle_items?: BundleItem[] }
+) {
+  try {
+    const all = getProductExtensions();
+    if (id) all[id] = { ...all[id], ...ext };
+    if (name) all[`name:${name.toLowerCase().trim()}`] = { ...all[`name:${name.toLowerCase().trim()}`], ...ext };
+    localStorage.setItem(PRODUCT_EXT_CACHE_KEY, JSON.stringify(all));
+  } catch (e) {
+    console.error("Save product extension error:", e);
+  }
+}
+
 // ==================== PRODUCTS SERVICE ====================
 
 export const productService = {
@@ -357,15 +386,37 @@ export const productService = {
       }
       return prods;
     }
-    const { data, error } = await supabase.from("products").select("*").order("created_at", { ascending: false });
-    if (error) return [];
-    return data as Product[];
+
+    try {
+      const { data, error } = await supabase.from("products").select("*").order("created_at", { ascending: false });
+      if (error || !data) return [];
+
+      const extensions = getProductExtensions();
+      const enrichedProducts = (data as Product[]).map((p) => {
+        const ext = extensions[p.id] || extensions[`name:${p.name?.toLowerCase().trim()}`];
+        const hasDbTiers = Array.isArray(p.tier_pricing) && p.tier_pricing.length > 0;
+        const hasDbBundle = Array.isArray(p.bundle_items) && p.bundle_items.length > 0;
+
+        return {
+          ...p,
+          type: (p.type || ext?.type || "single") as "single" | "bundle",
+          tier_pricing: hasDbTiers ? p.tier_pricing : (ext?.tier_pricing || []),
+          bundle_items: hasDbBundle ? p.bundle_items : (ext?.bundle_items || []),
+        };
+      });
+
+      return enrichedProducts;
+    } catch (e) {
+      console.error("Error loading products:", e);
+      return [];
+    }
   },
 
   async create(formData: ProductFormData): Promise<{ data: Product | null; error: string | null }> {
+    const isBundle = formData.type === "bundle";
+
     if (isMissingCredentials) {
       const products = getLocal<Product[]>(STORAGE_KEYS.PRODUCTS, []);
-      const isBundle = formData.type === "bundle";
       const newProduct: Product = {
         id: `prod-${Date.now()}`,
         user_id: "demo-user-id",
@@ -383,6 +434,13 @@ export const productService = {
       };
       products.unshift(newProduct);
       setLocal(STORAGE_KEYS.PRODUCTS, products);
+
+      saveProductExtension(newProduct.id, newProduct.name, {
+        type: formData.type || "single",
+        tier_pricing: isBundle ? [] : (formData.tier_pricing || []),
+        bundle_items: isBundle ? (formData.bundle_items || []) : [],
+      });
+
       return { data: newProduct, error: null };
     }
 
@@ -392,7 +450,6 @@ export const productService = {
         return { data: null, error: "Sesi login Anda tidak aktif. Silakan login kembali." };
       }
 
-      const isBundle = formData.type === "bundle";
       const fullPayload: any = {
         user_id: user.id,
         name: formData.name.trim(),
@@ -439,12 +496,20 @@ export const productService = {
           if (fbError) {
             return { data: null, error: fbError.message };
           }
+
           const createdWithMetadata: Product = {
             ...fbData,
             type: formData.type || "single",
             tier_pricing: formData.tier_pricing || [],
             bundle_items: formData.bundle_items || [],
           };
+
+          saveProductExtension(createdWithMetadata.id, createdWithMetadata.name, {
+            type: formData.type || "single",
+            tier_pricing: isBundle ? [] : (formData.tier_pricing || []),
+            bundle_items: isBundle ? (formData.bundle_items || []) : [],
+          });
+
           return { data: createdWithMetadata, error: null };
         }
 
@@ -455,7 +520,14 @@ export const productService = {
         return { data: null, error: error.message };
       }
 
-      return { data: data as Product, error: null };
+      const createdProduct = data as Product;
+      saveProductExtension(createdProduct.id, createdProduct.name, {
+        type: formData.type || "single",
+        tier_pricing: isBundle ? [] : (formData.tier_pricing || []),
+        bundle_items: isBundle ? (formData.bundle_items || []) : [],
+      });
+
+      return { data: createdProduct, error: null };
     } catch (e: unknown) {
       const err = e as Error;
       return { data: null, error: err?.message || "Gagal menambahkan produk" };
@@ -463,6 +535,15 @@ export const productService = {
   },
 
   async update(id: string, updates: Partial<ProductFormData>): Promise<{ error: string | null }> {
+    const isBundle = updates.type === "bundle";
+
+    // Always cache the extensions locally so they are permanently preserved
+    saveProductExtension(id, updates.name, {
+      type: updates.type,
+      tier_pricing: isBundle ? [] : updates.tier_pricing,
+      bundle_items: isBundle ? updates.bundle_items : [],
+    });
+
     if (isMissingCredentials) {
       const products = getLocal<Product[]>(STORAGE_KEYS.PRODUCTS, []);
       const index = products.findIndex((p) => p.id === id);
@@ -477,7 +558,6 @@ export const productService = {
     }
 
     try {
-      const isBundle = updates.type === "bundle";
       const fullPayload: any = {
         ...updates,
         purchase_price: updates.purchase_price !== undefined ? Number(updates.purchase_price) : undefined,

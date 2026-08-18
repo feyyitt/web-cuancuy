@@ -329,6 +329,7 @@ export function ProductsPage() {
         });
         toast.success(`Produk "${formData.name}" berhasil diperbarui`);
         setEditingProduct(null);
+        loadProducts();
       }
     } else {
       const res = await productService.create(formData);
@@ -342,6 +343,7 @@ export function ProductsPage() {
         }
         toast.success(`Produk "${formData.name}" berhasil ditambahkan`);
         setIsAddModalOpen(false);
+        loadProducts();
       }
     }
   };
