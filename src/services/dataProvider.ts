@@ -574,7 +574,7 @@ export const salesService = {
       if (!product) return { data: null, error: "Produk tidak ditemukan" };
 
       // Handle Bundle Combo Sale (Deduct component stocks)
-      if (product.type === "bundle" && product.bundle_items && product.bundle_items.length > 0) {
+      if (product.type === "bundle" && Array.isArray(product.bundle_items) && product.bundle_items.length > 0) {
         // 1. Check stock for each component item
         for (const item of product.bundle_items) {
           const component = products.find((p) => p.id === item.product_id);
@@ -582,7 +582,7 @@ export const salesService = {
           if (!component || component.stock < requiredStock) {
             return {
               data: null,
-              error: `Stok komponen ${item.product_name} tidak mencukupi (Butuh ${requiredStock}, Tersedia ${component?.stock || 0})`,
+              error: `Stok komponen "${item.product_name}" tidak mencukupi (Butuh ${requiredStock}, Tersedia ${component?.stock || 0})`,
             };
           }
         }
@@ -603,11 +603,11 @@ export const salesService = {
         setLocal(STORAGE_KEYS.PRODUCTS, products);
 
         const revenue = options?.customSellingPrice !== undefined
-          ? options.customSellingPrice
-          : product.selling_price * quantity;
+          ? Number(options.customSellingPrice)
+          : Number(product.selling_price) * quantity;
         const cost = options?.customPurchasePrice !== undefined
-          ? options.customPurchasePrice
-          : product.purchase_price * quantity;
+          ? Number(options.customPurchasePrice)
+          : Number(product.purchase_price) * quantity;
         const profit = revenue - cost;
 
         const newSale: Sale = {
@@ -649,11 +649,11 @@ export const salesService = {
 
       // Create snapshot sale record with custom bundle pricing support
       const revenue = options?.customSellingPrice !== undefined
-        ? options.customSellingPrice
-        : product.selling_price * quantity;
+        ? Number(options.customSellingPrice)
+        : Number(product.selling_price) * quantity;
       const cost = options?.customPurchasePrice !== undefined
-        ? options.customPurchasePrice
-        : product.purchase_price * quantity;
+        ? Number(options.customPurchasePrice)
+        : Number(product.purchase_price) * quantity;
       const profit = revenue - cost;
 
       const newSale: Sale = {
@@ -679,10 +679,11 @@ export const salesService = {
     }
 
     try {
-      // In Supabase mode, if it's a custom price or bundle sale
+      // 1. In Supabase mode, verify authenticated user
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return { data: null, error: "Tidak terautentikasi" };
+      if (!user) return { data: null, error: "Sesi login berakhir. Silakan login kembali." };
 
+      // 2. Fetch target product
       const { data: product, error: fetchErr } = await supabase
         .from("products")
         .select("*")
@@ -691,13 +692,16 @@ export const salesService = {
 
       if (fetchErr || !product) return { data: null, error: "Produk tidak ditemukan" };
 
-      // Handle Bundle Combo Sale (Deduct component stocks in Supabase)
-      if (product.type === "bundle" && product.bundle_items && product.bundle_items.length > 0) {
+      // 3. Handle Bundle Combo Sale vs Single Product Stock Deductions
+      if (product.type === "bundle" && Array.isArray(product.bundle_items) && product.bundle_items.length > 0) {
         for (const item of product.bundle_items) {
           const { data: comp } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
           const req = item.quantity * quantity;
           if (!comp || comp.stock < req) {
-            return { data: null, error: `Stok ${item.product_name} tidak cukup.` };
+            return {
+              data: null,
+              error: `Stok komponen "${item.product_name}" tidak cukup (Tersedia ${comp?.stock || 0}, Butuh ${req})`,
+            };
           }
         }
 
@@ -707,51 +711,100 @@ export const salesService = {
             await supabase
               .from("products")
               .update({
-                stock: comp.stock - item.quantity * quantity,
+                stock: Math.max(0, comp.stock - item.quantity * quantity),
                 total_sold: (comp.total_sold || 0) + item.quantity * quantity,
                 updated_at: new Date().toISOString(),
               })
               .eq("id", item.product_id);
           }
         }
-      } else {
-        if (product.stock < quantity) return { data: null, error: "Stok tidak mencukupi" };
+
+        // Deduct bundle stock
         await supabase
           .from("products")
           .update({
-            stock: product.stock - quantity,
+            stock: Math.max(0, (product.stock || 0) - quantity),
+            total_sold: (product.total_sold || 0) + quantity,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", productId);
+      } else {
+        if (product.stock < quantity) {
+          return { data: null, error: `Stok tidak mencukupi (Tersedia ${product.stock} pcs, Diminta ${quantity} pcs)` };
+        }
+
+        await supabase
+          .from("products")
+          .update({
+            stock: Math.max(0, product.stock - quantity),
             total_sold: (product.total_sold || 0) + quantity,
             updated_at: new Date().toISOString(),
           })
           .eq("id", productId);
       }
 
+      // 4. Calculate final revenues and costs
       const revenue = options?.customSellingPrice !== undefined
-        ? options.customSellingPrice
+        ? Number(options.customSellingPrice)
         : Number(product.selling_price) * quantity;
       const cost = options?.customPurchasePrice !== undefined
-        ? options.customPurchasePrice
+        ? Number(options.customPurchasePrice)
         : Number(product.purchase_price) * quantity;
       const profit = revenue - cost;
 
+      const salePayload: any = {
+        user_id: user.id,
+        product_id: productId,
+        quantity,
+        purchase_price: cost / quantity,
+        selling_price: revenue / quantity,
+        total_revenue: revenue,
+        total_cost: cost,
+        total_profit: profit,
+        bundle_info: options?.bundle_info || null,
+      };
+
+      // Try inserting with bundle_info
+      let insertedSale: any = null;
       const { data: saleData, error: saleErr } = await supabase
         .from("sales")
-        .insert({
-          user_id: user.id,
-          product_id: productId,
-          quantity,
-          purchase_price: cost / quantity,
-          selling_price: revenue / quantity,
-          total_revenue: revenue,
-          total_cost: cost,
-          total_profit: profit,
-          bundle_info: options?.bundle_info || null,
-        })
-        .select("*, product:products(*)")
+        .insert(salePayload)
+        .select()
         .single();
 
-      if (saleErr) return { data: null, error: saleErr.message };
-      return { data: saleData as Sale, error: null };
+      if (saleErr) {
+        console.warn("Supabase sale insert with bundle_info failed, attempting fallback:", saleErr);
+        // Fallback: if 'bundle_info' column doesn't exist yet on remote table
+        if (
+          saleErr.message.includes("column") ||
+          saleErr.message.includes("does not exist") ||
+          saleErr.code === "42703" ||
+          saleErr.code === "PGRST204"
+        ) {
+          const { bundle_info, ...basicPayload } = salePayload;
+          const { data: fbData, error: fbError } = await supabase
+            .from("sales")
+            .insert(basicPayload)
+            .select()
+            .single();
+
+          if (fbError) {
+            return { data: null, error: fbError.message };
+          }
+          insertedSale = fbData;
+        } else {
+          return { data: null, error: saleErr.message };
+        }
+      } else {
+        insertedSale = saleData;
+      }
+
+      const completeSale: Sale = {
+        ...insertedSale,
+        product: { ...product },
+      };
+
+      return { data: completeSale, error: null };
     } catch (e: unknown) {
       const err = e as Error;
       return { data: null, error: err?.message || "Gagal mencatat penjualan" };
@@ -768,13 +821,28 @@ export const salesService = {
       }));
     }
 
-    const { data, error } = await supabase
-      .from("sales")
-      .select("*, product:products(*)")
-      .order("created_at", { ascending: false });
+    try {
+      const [salesRes, prodsRes] = await Promise.all([
+        supabase.from("sales").select("*").order("created_at", { ascending: false }),
+        supabase.from("products").select("*"),
+      ]);
 
-    if (error) return [];
-    return data as Sale[];
+      if (salesRes.error) {
+        console.error("Fetch sales error:", salesRes.error);
+        return [];
+      }
+
+      const productsList = (prodsRes.data as Product[]) || [];
+      const salesList = (salesRes.data as Sale[]) || [];
+
+      return salesList.map((s) => ({
+        ...s,
+        product: productsList.find((p) => p.id === s.product_id) || undefined,
+      }));
+    } catch (e) {
+      console.error("Error fetching sales:", e);
+      return [];
+    }
   },
 
   async delete(id: string): Promise<{ error: string | null }> {
@@ -839,6 +907,16 @@ export const capitalService = {
 
     if (error) return { data: null, error: "Gagal menambah transaksi modal" };
     return { data: data as CapitalTransaction, error: null };
+  },
+
+  async delete(id: string): Promise<{ error: string | null }> {
+    if (isMissingCredentials) {
+      const items = getLocal<CapitalTransaction[]>(STORAGE_KEYS.CAPITAL, []);
+      setLocal(STORAGE_KEYS.CAPITAL, items.filter((c) => c.id !== id));
+      return { error: null };
+    }
+    const { error } = await supabase.from("capital_transactions").delete().eq("id", id);
+    return { error: error ? error.message : null };
   },
 };
 

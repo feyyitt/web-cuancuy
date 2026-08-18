@@ -124,8 +124,14 @@ export function SalesPage() {
 
     if (res.error) {
       toast.error(res.error);
-    } else if (res.data) {
-      addSale(res.data);
+    } else {
+      if (res.data) {
+        addSale(res.data);
+      } else {
+        const freshSales = await salesService.getAll();
+        setSales(freshSales);
+      }
+
       // Reload fresh products to update stock across bundle components
       const freshProducts = await productService.getAll();
       setProducts(freshProducts);
