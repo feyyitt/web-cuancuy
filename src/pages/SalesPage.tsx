@@ -27,6 +27,9 @@ export function SalesPage() {
   const { products, setProducts } = useProductStore();
 
   const [search, setSearch] = useState("");
+  const [historyFilter, setHistoryFilter] = useState<"all" | "single" | "bundle">("all");
+  const [modalCategoryTab, setModalCategoryTab] = useState<"all" | "single" | "bundle">("all");
+
   const [isRecordModalOpen, setIsRecordModalOpen] = useState(false);
   const [selectedProductId, setSelectedProductId] = useState<string>("");
   const [quantity, setQuantity] = useState<number>(1);
@@ -53,10 +56,24 @@ export function SalesPage() {
     return products.find((p) => p.id === selectedProductId) || null;
   }, [products, selectedProductId]);
 
-  const handleOpenRecord = (preselectedProdId?: string) => {
+  const handleOpenRecord = (preselectedProdId?: string, preferredTab?: "single" | "bundle") => {
+    if (preferredTab) {
+      setModalCategoryTab(preferredTab);
+    } else if (preselectedProdId) {
+      const prod = products.find((p) => p.id === preselectedProdId);
+      if (prod?.type === "bundle") setModalCategoryTab("bundle");
+      else setModalCategoryTab("single");
+    } else {
+      setModalCategoryTab("all");
+    }
+
+    const availableProducts = preferredTab
+      ? products.filter((p) => (preferredTab === "bundle" ? p.type === "bundle" : p.type !== "bundle"))
+      : products;
+
     const defaultProd = preselectedProdId
       ? products.find((p) => p.id === preselectedProdId && p.stock > 0)
-      : products.find((p) => p.stock > 0);
+      : availableProducts.find((p) => p.stock > 0) || products[0];
 
     const targetId = defaultProd?.id || products[0]?.id || "";
     setSelectedProductId(targetId);
@@ -65,6 +82,13 @@ export function SalesPage() {
     setSuccessAnimation(false);
     setIsRecordModalOpen(true);
   };
+
+  // Filtered product options for modal
+  const modalProducts = useMemo(() => {
+    if (modalCategoryTab === "bundle") return products.filter((p) => p.type === "bundle");
+    if (modalCategoryTab === "single") return products.filter((p) => p.type !== "bundle");
+    return products;
+  }, [products, modalCategoryTab]);
 
   // Pricing calculations (with Tier and Combo Bundling support)
   const isBundle = selectedProduct?.type === "bundle";
@@ -161,13 +185,19 @@ export function SalesPage() {
     }
   };
 
-  // Filtered sales
+  // Filtered sales history
   const filteredSales = useMemo(() => {
     return sales.filter((s) => {
       const prodName = s.product?.name || "";
-      return prodName.toLowerCase().includes(search.toLowerCase());
+      const matchesSearch = prodName.toLowerCase().includes(search.toLowerCase());
+      if (!matchesSearch) return false;
+
+      const isBundleSale = s.bundle_info?.is_bundle || s.product?.type === "bundle";
+      if (historyFilter === "bundle") return isBundleSale;
+      if (historyFilter === "single") return !isBundleSale;
+      return true;
     });
-  }, [sales, search]);
+  }, [sales, search, historyFilter]);
 
   // Overall totals
   const overallSummary = useMemo(() => {
@@ -191,14 +221,23 @@ export function SalesPage() {
             Catat penjualan satuan maupun paket bundling, otomatis potong stok komponen, dan hitung laba bersih.
           </p>
         </div>
-        <button
-          onClick={() => handleOpenRecord()}
-          disabled={products.length === 0}
-          className="flex items-center gap-2 rounded-xl bg-emerald px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-hover active:scale-[0.98] transition-all shadow-md shadow-emerald/20 disabled:opacity-50 cursor-pointer"
-        >
-          <Plus className="h-4 w-4" />
-          <span>+ Catat Penjualan</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => handleOpenRecord(undefined, "bundle")}
+            className="flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-text-primary hover:bg-elevated hover:border-emerald/40 transition-colors cursor-pointer"
+          >
+            <Package className="h-4 w-4 text-emerald" />
+            <span>+ Jual Paket Kombo</span>
+          </button>
+          <button
+            onClick={() => handleOpenRecord()}
+            disabled={products.length === 0}
+            className="flex items-center gap-2 rounded-xl bg-emerald px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-hover active:scale-[0.98] transition-all shadow-md shadow-emerald/20 disabled:opacity-50 cursor-pointer"
+          >
+            <Plus className="h-4 w-4" />
+            <span>+ Catat Penjualan</span>
+          </button>
+        </div>
       </div>
 
       {/* Overview Stats Cards */}
@@ -243,12 +282,16 @@ export function SalesPage() {
       {/* Quick Sell Cards from Products (Shortcuts) */}
       {products.length > 0 && (
         <div>
-          <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2.5">
-            Pilihan Cepat Catat Penjualan
-          </h3>
+          <div className="flex items-center justify-between mb-2.5">
+            <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider">
+              Pilihan Cepat Catat Penjualan
+            </h3>
+            <span className="text-xs text-text-muted">Klik untuk langsung catat transaksi</span>
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {products.slice(0, 3).map((p) => {
               const isCombo = p.type === "bundle";
+              const hasTiers = !isCombo && p.tier_pricing && p.tier_pricing.length > 0;
               return (
                 <div
                   key={p.id}
@@ -258,15 +301,19 @@ export function SalesPage() {
                   }`}
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <p className="text-sm font-semibold text-text-primary group-hover:text-emerald transition-colors truncate">
                         {p.name}
                       </p>
-                      {isCombo && (
+                      {isCombo ? (
                         <span className="rounded bg-emerald/10 px-1.5 py-0.2 text-[9px] font-bold text-emerald border border-emerald/20 uppercase">
-                          Paket
+                          📦 Paket Kombo
                         </span>
-                      )}
+                      ) : hasTiers ? (
+                        <span className="rounded bg-amber/10 px-1.5 py-0.2 text-[9px] font-bold text-amber border border-amber/20 uppercase">
+                          🏷️ Promo Multi-Buy
+                        </span>
+                      ) : null}
                     </div>
                     <p className="text-xs text-text-muted mt-0.5">
                       Harga: {formatCurrency(p.selling_price)} • Stok: {p.stock} {isCombo ? "paket" : "pcs"}
@@ -284,13 +331,42 @@ export function SalesPage() {
 
       {/* Filter and History Table */}
       <div className="rounded-2xl border border-border bg-card overflow-hidden">
-        {/* Table Top Bar */}
+        {/* Table Top Bar with Filter Tabs */}
         <div className="p-4 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <h3 className="text-base font-bold text-text-primary">Riwayat Transaksi Penjualan</h3>
-            <span className="rounded-full bg-elevated px-2.5 py-0.5 text-xs text-text-secondary font-medium">
-              {filteredSales.length} transaksi
-            </span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-base font-bold text-text-primary">Riwayat Transaksi</h3>
+            <div className="flex items-center gap-1 bg-elevated/60 p-1 rounded-xl border border-border">
+              <button
+                onClick={() => setHistoryFilter("all")}
+                className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                  historyFilter === "all"
+                    ? "bg-card text-emerald shadow-xs"
+                    : "text-text-muted hover:text-text-primary"
+                }`}
+              >
+                Semua ({sales.length})
+              </button>
+              <button
+                onClick={() => setHistoryFilter("single")}
+                className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                  historyFilter === "single"
+                    ? "bg-card text-emerald shadow-xs"
+                    : "text-text-muted hover:text-text-primary"
+                }`}
+              >
+                🏷️ Satuan & Promo
+              </button>
+              <button
+                onClick={() => setHistoryFilter("bundle")}
+                className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                  historyFilter === "bundle"
+                    ? "bg-card text-emerald shadow-xs"
+                    : "text-text-muted hover:text-text-primary"
+                }`}
+              >
+                📦 Paket Kombo
+              </button>
+            </div>
           </div>
 
           <div className="relative w-full sm:w-64">
@@ -325,8 +401,8 @@ export function SalesPage() {
                 <tr>
                   <th className="px-4 py-3">Tanggal & Waktu</th>
                   <th className="px-4 py-3">Produk / Paket</th>
-                  <th className="px-4 py-3 text-center">Qty</th>
-                  <th className="px-4 py-3 text-right">Rata-Rata / pcs</th>
+                  <th className="px-4 py-3 text-center">Qty Terjual</th>
+                  <th className="px-4 py-3 text-right">Harga Efektif</th>
                   <th className="px-4 py-3 text-right">Total Penjualan</th>
                   <th className="px-4 py-3 text-right">Keuntungan</th>
                   <th className="px-4 py-3 text-center">Aksi</th>
@@ -350,14 +426,14 @@ export function SalesPage() {
                       </td>
                       <td className="px-4 py-3.5 font-medium text-text-primary">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span>{s.product?.name || "Produk dihapus"}</span>
+                          <span>{s.product?.name || "Produk"}</span>
                           {isBundleSale ? (
                             <span className="rounded bg-emerald/10 px-1.5 py-0.2 text-[10px] font-bold text-emerald border border-emerald/20 uppercase">
-                              Paket Kombo
+                              📦 Paket Kombo
                             </span>
                           ) : hasTierApplied ? (
                             <span className="rounded bg-amber/10 px-1.5 py-0.2 text-[10px] font-bold text-amber border border-amber/20 uppercase">
-                              Promo Bundling
+                              🏷️ Promo Bundling
                             </span>
                           ) : null}
                         </div>
@@ -377,7 +453,7 @@ export function SalesPage() {
                       <td className="px-4 py-3.5 text-center">
                         <button
                           onClick={() => setDeletingSale(s)}
-                          title="Hapus Transaksi"
+                          title="Hapus Transaksi (Kembalikan Stok)"
                           className="rounded-lg p-1.5 text-text-muted hover:bg-error/10 hover:text-error transition-colors cursor-pointer"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -444,47 +520,183 @@ export function SalesPage() {
                   </div>
 
                   <div className="mt-4 space-y-4">
+                    {/* Category Selection Tabs in Modal */}
+                    <div>
+                      <label className="block text-xs font-semibold text-text-secondary uppercase mb-1.5">
+                        Tipe Penjualan
+                      </label>
+                      <div className="grid grid-cols-3 gap-1.5 bg-elevated/60 p-1 rounded-xl border border-border">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModalCategoryTab("all");
+                            const first = products.find((p) => p.stock > 0) || products[0];
+                            if (first) setSelectedProductId(first.id);
+                          }}
+                          className={`py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                            modalCategoryTab === "all"
+                              ? "bg-card text-emerald shadow-xs"
+                              : "text-text-muted hover:text-text-primary"
+                          }`}
+                        >
+                          Semua Produk
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModalCategoryTab("single");
+                            const first = products.find((p) => p.type !== "bundle" && p.stock > 0) || products.find((p) => p.type !== "bundle");
+                            if (first) setSelectedProductId(first.id);
+                          }}
+                          className={`py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                            modalCategoryTab === "single"
+                              ? "bg-card text-emerald shadow-xs"
+                              : "text-text-muted hover:text-text-primary"
+                          }`}
+                        >
+                          <Tag className="h-3 w-3" />
+                          <span>Satuan & Promo</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModalCategoryTab("bundle");
+                            const first = products.find((p) => p.type === "bundle" && p.stock > 0) || products.find((p) => p.type === "bundle");
+                            if (first) setSelectedProductId(first.id);
+                          }}
+                          className={`py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                            modalCategoryTab === "bundle"
+                              ? "bg-card text-emerald shadow-xs"
+                              : "text-text-muted hover:text-text-primary"
+                          }`}
+                        >
+                          <Package className="h-3 w-3" />
+                          <span>Paket Kombo</span>
+                        </button>
+                      </div>
+                    </div>
+
                     {/* Select Product */}
                     <div>
                       <label className="block text-xs font-semibold text-text-secondary uppercase mb-1.5">
-                        Pilih Produk / Paket Bundling
+                        Pilih Barang / Paket
                       </label>
-                      <select
-                        value={selectedProductId}
-                        onChange={(e) => {
-                          setSelectedProductId(e.target.value);
-                          setQuantity(1);
-                        }}
-                        className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm text-text-primary focus:border-emerald focus:outline-none cursor-pointer"
-                      >
-                        {products.map((p) => (
-                          <option key={p.id} value={p.id} disabled={p.stock <= 0}>
-                            {p.type === "bundle" ? "📦 [PAKET KOMBO] " : ""}
-                            {p.name} — Harga: {formatCurrency(p.selling_price)} (Stok: {p.stock}{" "}
-                            {p.type === "bundle" ? "paket" : "pcs"})
-                          </option>
-                        ))}
-                      </select>
+                      {modalProducts.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-border p-4 text-center text-xs text-text-muted">
+                          Tidak ada produk dalam kategori ini. Tambahkan produk di menu Produk terlebih dahulu.
+                        </div>
+                      ) : (
+                        <select
+                          value={selectedProductId}
+                          onChange={(e) => {
+                            setSelectedProductId(e.target.value);
+                            setQuantity(1);
+                          }}
+                          className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm text-text-primary focus:border-emerald focus:outline-none cursor-pointer"
+                        >
+                          {modalProducts.map((p) => (
+                            <option key={p.id} value={p.id} disabled={p.stock <= 0}>
+                              {p.type === "bundle" ? "📦 [PAKET KOMBO] " : p.tier_pricing?.length ? "🏷️ [PROMO BUNDLE] " : ""}
+                              {p.name} — Harga: {formatCurrency(p.selling_price)} (Stok: {p.stock}{" "}
+                              {p.type === "bundle" ? "paket" : "pcs"})
+                            </option>
+                          ))}
+                        </select>
+                      )}
                     </div>
 
                     {selectedProduct && (
                       <>
                         {/* Bundle Details breakdown */}
                         {isBundle && selectedProduct.bundle_items && (
-                          <div className="rounded-xl bg-emerald/5 border border-emerald/20 p-3 text-xs space-y-1.5">
-                            <span className="font-bold text-emerald uppercase tracking-wider block">
-                              📦 Komponen yang akan dipotong dari stok:
+                          <div className="rounded-xl bg-emerald/5 border border-emerald/20 p-3.5 text-xs space-y-2">
+                            <span className="font-bold text-emerald uppercase tracking-wider flex items-center gap-1.5">
+                              <Package className="h-3.5 w-3.5" />
+                              Rincian Komponen Paket Kombo:
                             </span>
-                            {selectedProduct.bundle_items.map((it, idx) => (
-                              <div key={idx} className="flex justify-between text-text-secondary">
-                                <span>• {it.quantity * quantity}x {it.product_name}</span>
-                                <span className="text-text-muted">({it.quantity} pcs per paket)</span>
-                              </div>
-                            ))}
+                            <div className="space-y-1">
+                              {selectedProduct.bundle_items.map((it, idx) => (
+                                <div key={idx} className="flex justify-between text-text-secondary">
+                                  <span>• {it.quantity * quantity}x {it.product_name}</span>
+                                  <span className="text-text-muted">({it.quantity} pcs/paket)</span>
+                                </div>
+                              ))}
+                            </div>
+                            <p className="text-[11px] text-text-muted border-t border-emerald/15 pt-1.5">
+                              💡 Penjualan {quantity} paket ini akan otomatis memotong stok setiap komponen di atas.
+                            </p>
                           </div>
                         )}
 
-                        {/* Quantity Stepper */}
+                        {/* Interactive Package / Tier Selector for Single Products */}
+                        {!isBundle && selectedProduct.tier_pricing && selectedProduct.tier_pricing.length > 0 && (
+                          <div>
+                            <label className="block text-xs font-semibold text-text-secondary uppercase mb-2 flex items-center gap-1.5">
+                              <Sparkles className="h-3.5 w-3.5 text-amber" />
+                              Pilihan Paket Penjualan / Promo Bundling:
+                            </label>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {/* Option 1: Satuan (1 pcs) */}
+                              <div
+                                onClick={() => setQuantity(1)}
+                                className={`p-2.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
+                                  quantity === 1
+                                    ? "bg-emerald/15 border-emerald text-text-primary ring-1 ring-emerald"
+                                    : "bg-elevated/40 border-border hover:border-emerald/40 text-text-secondary"
+                                }`}
+                              >
+                                <div className="flex justify-between items-center">
+                                  <span className="text-xs font-bold">Beli Satuan (1 pcs)</span>
+                                  <span className="text-[10px] text-text-muted">Harga Normal</span>
+                                </div>
+                                <div className="mt-1 text-sm font-bold text-text-primary tabular-nums">
+                                  {formatCurrency(selectedProduct.selling_price)}
+                                </div>
+                              </div>
+
+                              {/* Tier Bundling Options */}
+                              {selectedProduct.tier_pricing.map((tier, idx) => {
+                                const isSelected = quantity === tier.min_qty;
+                                const normalCost = selectedProduct.selling_price * tier.min_qty;
+                                const savings = normalCost - tier.price;
+
+                                return (
+                                  <div
+                                    key={idx}
+                                    onClick={() => setQuantity(tier.min_qty)}
+                                    className={`p-2.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
+                                      isSelected
+                                        ? "bg-amber/15 border-amber text-text-primary ring-1 ring-amber"
+                                        : "bg-amber/5 border-amber/30 hover:border-amber text-text-secondary"
+                                    }`}
+                                  >
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-xs font-bold text-amber flex items-center gap-1">
+                                        <Tag className="h-3 w-3" />
+                                        {tier.label || `Paket ${tier.min_qty} pcs`}
+                                      </span>
+                                      {savings > 0 && (
+                                        <span className="rounded bg-amber px-1.5 py-0.2 text-[9px] font-bold text-white uppercase">
+                                          Hemat {formatCurrency(savings)}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="mt-1 flex items-baseline justify-between">
+                                      <span className="text-sm font-bold text-text-primary tabular-nums">
+                                        {formatCurrency(tier.price)}
+                                      </span>
+                                      <span className="text-[10px] text-text-muted">
+                                        ({formatCurrency(tier.price / tier.min_qty)}/pcs)
+                                      </span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Quantity Stepper & Custom Qty */}
                         <div>
                           <div className="flex items-center justify-between mb-1.5">
                             <label className="block text-xs font-semibold text-text-secondary uppercase">
@@ -528,40 +740,9 @@ export function SalesPage() {
                             </button>
                           </div>
 
-                          {/* Quick Preset Buttons (Include Bundling Tiers if any) */}
+                          {/* Quick Preset Buttons */}
                           <div className="flex flex-wrap gap-1.5 mt-2">
-                            <button
-                              type="button"
-                              onClick={() => setQuantity(1)}
-                              className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
-                                quantity === 1
-                                  ? "bg-emerald text-white border-emerald"
-                                  : "border-border bg-elevated/60 text-text-secondary hover:text-emerald"
-                              }`}
-                            >
-                              1 {isBundle ? "paket" : "pcs"}
-                            </button>
-
-                            {/* Show defined Tier Pricing Buttons for single product */}
-                            {!isBundle &&
-                              selectedProduct.tier_pricing?.map((tier, idx) => (
-                                <button
-                                  key={idx}
-                                  type="button"
-                                  disabled={tier.min_qty > selectedProduct.stock}
-                                  onClick={() => setQuantity(tier.min_qty)}
-                                  className={`rounded-lg border px-2.5 py-1 text-xs font-semibold transition-colors cursor-pointer flex items-center gap-1 ${
-                                    quantity === tier.min_qty
-                                      ? "bg-emerald text-white border-emerald"
-                                      : "border-amber/30 bg-amber/10 text-amber hover:bg-amber/20"
-                                  } disabled:opacity-30`}
-                                >
-                                  <Tag className="h-3 w-3" />
-                                  Beli {tier.min_qty} pcs ({formatCurrency(tier.price)})
-                                </button>
-                              ))}
-
-                            {[5, 10, 20].map((qty) => (
+                            {[1, 2, 3, 5, 10, 20].map((qty) => (
                               <button
                                 key={qty}
                                 type="button"
@@ -579,7 +760,7 @@ export function SalesPage() {
                           </div>
                         </div>
 
-                        {/* Bundling Promotion Banner if Applied */}
+                        {/* Bundling Promotion Active Banner */}
                         {appliedTier && (
                           <div className="rounded-xl bg-amber/10 border border-amber/30 p-3 text-xs flex items-center gap-2 text-amber">
                             <Sparkles className="h-4 w-4 shrink-0" />
@@ -594,14 +775,14 @@ export function SalesPage() {
                         {/* Financial calculation breakdown card */}
                         <div className="rounded-xl bg-elevated/60 border border-border p-4 space-y-2 text-xs">
                           <div className="flex justify-between text-text-secondary">
-                            <span>Harga Satuan / Normal:</span>
+                            <span>Harga Normal Satuan:</span>
                             <span className="font-semibold text-text-primary tabular-nums">
                               {formatCurrency(selectedProduct.selling_price)}
                             </span>
                           </div>
 
                           <div className="flex justify-between text-text-secondary">
-                            <span>Total Omset ({quantity} {isBundle ? "paket" : "pcs"}):</span>
+                            <span>Total Omset Diterima ({quantity} {isBundle ? "paket" : "pcs"}):</span>
                             <strong className="text-sm font-bold text-text-primary tabular-nums">
                               {formatCurrency(totalRevenue)}
                             </strong>
@@ -697,7 +878,7 @@ export function SalesPage() {
                       </div>
                       <div className="flex justify-between">
                         <span className="text-text-muted">Sisa Stok Nanti:</span>
-                        <span className="font-semibold text-text-primary">{remainingStock} pcs</span>
+                        <span className="font-semibold text-text-primary">{remainingStock} {isBundle ? "paket" : "pcs"}</span>
                       </div>
                     </div>
 
