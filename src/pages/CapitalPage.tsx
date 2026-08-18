@@ -13,6 +13,7 @@ import {
   Package,
   Receipt,
   Trash2,
+  Edit2,
   AlertCircle,
   X,
   Info,
@@ -28,6 +29,9 @@ export function CapitalPage() {
 
   // Modals
   const [isAddCapitalOpen, setIsAddCapitalOpen] = useState(false);
+  const [editingCapital, setEditingCapital] = useState<CapitalTransaction | null>(null);
+  const [deletingCapital, setDeletingCapital] = useState<CapitalTransaction | null>(null);
+
   const [isAddExpenseOpen, setIsAddExpenseOpen] = useState(false);
   const [deletingExpense, setDeletingExpense] = useState<Expense | null>(null);
 
@@ -35,6 +39,12 @@ export function CapitalPage() {
   const [capitalForm, setCapitalForm] = useState<CapitalFormData>({
     type: "add_capital",
     amount: 500000,
+    description: "",
+  });
+
+  const [editCapitalForm, setEditCapitalForm] = useState<CapitalFormData>({
+    type: "initial_capital",
+    amount: 1500000,
     description: "",
   });
 
@@ -85,7 +95,6 @@ export function CapitalPage() {
     // Total Expenses
     const totalExpenses = expenseList.reduce((acc, e) => acc + Number(e.amount), 0);
 
-    // Total initial purchase cost for all existing stock
     // Cash Available = Modal Bersih Disetor + Omset Penjualan - Nilai Modal Stok Saat Ini - Biaya Operasional
     const cashAvailable = Math.max(0, totalCapitalDeposited + totalRevenue - inventoryValue - totalExpenses);
 
@@ -115,6 +124,56 @@ export function CapitalPage() {
       toast.success("Transaksi modal berhasil disimpan");
       setIsAddCapitalOpen(false);
       setCapitalForm({ type: "add_capital", amount: 500000, description: "" });
+    }
+  };
+
+  const handleOpenEditCapital = (c: CapitalTransaction) => {
+    setEditingCapital(c);
+    setEditCapitalForm({
+      type: c.type,
+      amount: Number(c.amount),
+      description: c.description || "",
+    });
+  };
+
+  const handleUpdateCapital = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingCapital) return;
+    if (editCapitalForm.amount <= 0) {
+      toast.error("Nominal modal harus lebih dari Rp0");
+      return;
+    }
+
+    const res = await capitalService.updateTransaction(editingCapital.id, editCapitalForm);
+    if (res.error) {
+      toast.error(res.error);
+    } else {
+      setCapitalList(
+        capitalList.map((c) =>
+          c.id === editingCapital.id
+            ? {
+                ...c,
+                type: editCapitalForm.type,
+                amount: Number(editCapitalForm.amount),
+                description: editCapitalForm.description?.trim() || null,
+              }
+            : c
+        )
+      );
+      toast.success("✓ Saldo modal berhasil diperbarui!");
+      setEditingCapital(null);
+    }
+  };
+
+  const handleDeleteCapitalConfirm = async () => {
+    if (!deletingCapital) return;
+    const res = await capitalService.delete(deletingCapital.id);
+    if (res.error) {
+      toast.error(res.error);
+    } else {
+      setCapitalList(capitalList.filter((c) => c.id !== deletingCapital.id));
+      toast.success("Catatan modal berhasil dihapus");
+      setDeletingCapital(null);
     }
   };
 
@@ -171,7 +230,7 @@ export function CapitalPage() {
             className="flex items-center gap-2 rounded-xl bg-emerald px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-hover active:scale-[0.98] transition-all shadow-md shadow-emerald/20 cursor-pointer"
           >
             <Plus className="h-4 w-4" />
-            <span>Kelola Modal</span>
+            <span>+ Kelola Modal</span>
           </button>
         </div>
       </div>
@@ -295,6 +354,7 @@ export function CapitalPage() {
                       <th className="px-4 py-3">Tipe Transaksi</th>
                       <th className="px-4 py-3">Keterangan</th>
                       <th className="px-4 py-3 text-right">Nominal</th>
+                      <th className="px-4 py-3 text-center">Aksi</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/60">
@@ -344,6 +404,24 @@ export function CapitalPage() {
                             {isWithdrawal ? "-" : "+"}
                             {formatCurrency(c.amount)}
                           </td>
+                          <td className="px-4 py-3.5 text-center">
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                onClick={() => handleOpenEditCapital(c)}
+                                title="Edit Saldo Modal"
+                                className="rounded-lg p-1.5 text-text-muted hover:bg-elevated hover:text-text-primary transition-colors cursor-pointer"
+                              >
+                                <Edit2 className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                onClick={() => setDeletingCapital(c)}
+                                title="Hapus Catatan Modal"
+                                className="rounded-lg p-1.5 text-text-muted hover:bg-error/10 hover:text-error transition-colors cursor-pointer"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </td>
                         </tr>
                       );
                     })}
@@ -386,20 +464,19 @@ export function CapitalPage() {
                             year: "numeric",
                           })}
                         </td>
-                        <td className="px-4 py-3.5 font-medium text-text-primary">
-                          <span className="rounded-lg bg-elevated px-2 py-1 text-xs font-medium text-amber border border-border">
+                        <td className="px-4 py-3.5">
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber/10 px-2.5 py-0.5 text-xs font-medium text-amber border border-amber/20">
                             {e.category}
                           </span>
                         </td>
-                        <td className="px-4 py-3.5 text-text-secondary text-xs">
-                          {e.description || "-"}
-                        </td>
-                        <td className="px-4 py-3.5 text-right font-bold tabular-nums text-error">
-                          -{formatCurrency(e.amount)}
+                        <td className="px-4 py-3.5 text-text-secondary text-xs">{e.description || "-"}</td>
+                        <td className="px-4 py-3.5 text-right font-bold tabular-nums text-text-primary">
+                          {formatCurrency(e.amount)}
                         </td>
                         <td className="px-4 py-3.5 text-center">
                           <button
                             onClick={() => setDeletingExpense(e)}
+                            title="Hapus Biaya"
                             className="rounded-lg p-1.5 text-text-muted hover:bg-error/10 hover:text-error transition-colors cursor-pointer"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
@@ -435,7 +512,7 @@ export function CapitalPage() {
               <div className="flex items-center justify-between border-b border-border pb-3.5">
                 <h3 className="text-base font-bold text-text-primary flex items-center gap-2">
                   <Wallet className="h-4 w-4 text-emerald" />
-                  Kelola Transaksi Modal
+                  Tambah / Tarik Modal
                 </h3>
                 <button
                   onClick={() => setIsAddCapitalOpen(false)}
@@ -446,32 +523,41 @@ export function CapitalPage() {
               </div>
 
               <form onSubmit={handleSaveCapital} className="mt-4 space-y-4">
+                {/* Transaction Type Radio */}
                 <div>
-                  <label className="block text-xs font-semibold text-text-secondary uppercase mb-1.5">
-                    Jenis Transaksi
+                  <label className="block text-xs font-semibold text-text-secondary uppercase mb-2">
+                    Jenis Transaksi Modal
                   </label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {[
-                      { type: "initial_capital" as const, label: "Modal Awal" },
-                      { type: "add_capital" as const, label: "Tambah Modal" },
-                      { type: "withdrawal" as const, label: "Tarik Modal" },
-                    ].map((item) => (
-                      <button
-                        key={item.type}
-                        type="button"
-                        onClick={() => setCapitalForm({ ...capitalForm, type: item.type })}
-                        className={`rounded-xl border py-2 text-xs font-semibold transition-all cursor-pointer ${
-                          capitalForm.type === item.type
-                            ? "border-emerald bg-emerald/10 text-emerald"
-                            : "border-border bg-elevated/40 text-text-secondary hover:bg-elevated"
-                        }`}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCapitalForm({ ...capitalForm, type: "add_capital" })}
+                      className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                        capitalForm.type === "add_capital"
+                          ? "bg-emerald/15 border-emerald text-emerald font-bold"
+                          : "border-border bg-elevated/40 text-text-secondary hover:text-text-primary"
+                      }`}
+                    >
+                      <ArrowUpRight className="h-3.5 w-3.5" />
+                      <span>Tambah Modal</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setCapitalForm({ ...capitalForm, type: "withdrawal" })}
+                      className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                        capitalForm.type === "withdrawal"
+                          ? "bg-error/15 border-error text-error font-bold"
+                          : "border-border bg-elevated/40 text-text-secondary hover:text-text-primary"
+                      }`}
+                    >
+                      <ArrowDownLeft className="h-3.5 w-3.5" />
+                      <span>Tarik Modal</span>
+                    </button>
                   </div>
                 </div>
 
+                {/* Amount */}
                 <div>
                   <label className="block text-xs font-semibold text-text-secondary uppercase mb-1.5">
                     Nominal Modal (Rp) <span className="text-error">*</span>
@@ -490,9 +576,9 @@ export function CapitalPage() {
                     required
                     className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm font-bold text-text-primary tabular-nums focus:border-emerald focus:outline-none"
                   />
-                  {/* Presets */}
-                  <div className="flex gap-2 mt-2">
-                    {[500000, 1000000, 2500000, 5000000].map((amt) => (
+                  {/* Preset quick buttons */}
+                  <div className="flex gap-1.5 mt-2">
+                    {[100000, 500000, 1000000, 2000000].map((amt) => (
                       <button
                         key={amt}
                         type="button"
@@ -534,6 +620,196 @@ export function CapitalPage() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* EDIT CAPITAL / SALDO MODAL */}
+      <AnimatePresence>
+        {editingCapital && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setEditingCapital(null)}
+              className="absolute inset-0 bg-black/70 backdrop-blur-xs"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="relative z-10 w-full max-w-md rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex items-center justify-between border-b border-border pb-3.5">
+                <h3 className="text-base font-bold text-text-primary flex items-center gap-2">
+                  <Edit2 className="h-4 w-4 text-emerald" />
+                  Edit Saldo / Catatan Modal
+                </h3>
+                <button
+                  onClick={() => setEditingCapital(null)}
+                  className="rounded-lg p-1 text-text-muted hover:bg-elevated cursor-pointer"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleUpdateCapital} className="mt-4 space-y-4">
+                {/* Transaction Type */}
+                <div>
+                  <label className="block text-xs font-semibold text-text-secondary uppercase mb-2">
+                    Jenis Transaksi Modal
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditCapitalForm({ ...editCapitalForm, type: "initial_capital" })}
+                      className={`flex items-center justify-center gap-1 py-2 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                        editCapitalForm.type === "initial_capital"
+                          ? "bg-emerald/15 border-emerald text-emerald font-bold"
+                          : "border-border bg-elevated/40 text-text-secondary hover:text-text-primary"
+                      }`}
+                    >
+                      <span>Modal Awal</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setEditCapitalForm({ ...editCapitalForm, type: "add_capital" })}
+                      className={`flex items-center justify-center gap-1 py-2 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                        editCapitalForm.type === "add_capital"
+                          ? "bg-info/15 border-info text-info font-bold"
+                          : "border-border bg-elevated/40 text-text-secondary hover:text-text-primary"
+                      }`}
+                    >
+                      <span>Tambah</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setEditCapitalForm({ ...editCapitalForm, type: "withdrawal" })}
+                      className={`flex items-center justify-center gap-1 py-2 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                        editCapitalForm.type === "withdrawal"
+                          ? "bg-error/15 border-error text-error font-bold"
+                          : "border-border bg-elevated/40 text-text-secondary hover:text-text-primary"
+                      }`}
+                    >
+                      <span>Tarik</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Amount */}
+                <div>
+                  <label className="block text-xs font-semibold text-text-secondary uppercase mb-1.5">
+                    Nominal Saldo Modal (Rp) <span className="text-error">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={editCapitalForm.amount === 0 ? "" : editCapitalForm.amount}
+                    onChange={(e) =>
+                      setEditCapitalForm({
+                        ...editCapitalForm,
+                        amount: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)),
+                      })
+                    }
+                    placeholder="0"
+                    required
+                    className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm font-bold text-text-primary tabular-nums focus:border-emerald focus:outline-none"
+                  />
+                  {/* Preset quick buttons */}
+                  <div className="flex gap-1.5 mt-2">
+                    {[500000, 1000000, 1500000, 2000000, 5000000].map((amt) => (
+                      <button
+                        key={amt}
+                        type="button"
+                        onClick={() => setEditCapitalForm({ ...editCapitalForm, amount: amt })}
+                        className="flex-1 rounded-lg border border-border bg-elevated/60 py-1 text-[11px] font-medium text-text-secondary hover:bg-emerald/10 hover:text-emerald cursor-pointer"
+                      >
+                        {amt >= 1000000 ? `${amt / 1000000}Jt` : `${amt / 1000}rb`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-text-secondary uppercase mb-1.5">
+                    Catatan / Keterangan
+                  </label>
+                  <input
+                    type="text"
+                    value={editCapitalForm.description}
+                    onChange={(e) => setEditCapitalForm({ ...editCapitalForm, description: e.target.value })}
+                    placeholder="Contoh: Modal Awal Bisnis"
+                    className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-emerald focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingCapital(null)}
+                    className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-elevated cursor-pointer"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    className="rounded-xl bg-emerald px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-hover shadow-md shadow-emerald/20 cursor-pointer"
+                  >
+                    Simpan Perubahan
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* DELETE CAPITAL MODAL */}
+      <AnimatePresence>
+        {deletingCapital && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setDeletingCapital(null)}
+              className="absolute inset-0 bg-black/70 backdrop-blur-xs"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-2xl"
+            >
+              <div className="flex items-center gap-3 text-error">
+                <div className="rounded-xl bg-error/10 p-2.5">
+                  <AlertCircle className="h-6 w-6" />
+                </div>
+                <h3 className="text-lg font-bold text-text-primary">Hapus Transaksi Modal?</h3>
+              </div>
+              <p className="mt-3 text-sm text-text-secondary">
+                Hapus catatan modal sebesar <strong>{formatCurrency(deletingCapital.amount)}</strong>?
+              </p>
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setDeletingCapital(null)}
+                  className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-elevated cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeleteCapitalConfirm}
+                  className="rounded-xl bg-error px-5 py-2.5 text-sm font-semibold text-white hover:bg-error-hover cursor-pointer"
+                >
+                  Hapus
+                </button>
+              </div>
             </motion.div>
           </div>
         )}

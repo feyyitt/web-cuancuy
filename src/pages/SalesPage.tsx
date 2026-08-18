@@ -153,7 +153,10 @@ export function SalesPage() {
       toast.error(res.error);
     } else {
       removeSale(deletingSale.id);
-      toast.success("Riwayat transaksi berhasil dihapus");
+      // Reload products to reflect restored stock immediately
+      const freshProducts = await productService.getAll();
+      setProducts(freshProducts);
+      toast.success("✓ Transaksi dihapus & stok barang telah dikembalikan ke stok aktif!");
       setDeletingSale(null);
     }
   };
@@ -739,10 +742,13 @@ export function SalesPage() {
               exit={{ opacity: 0, scale: 0.95 }}
               className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-2xl"
             >
-              <h3 className="text-lg font-bold text-text-primary">Hapus Transaksi?</h3>
+              <h3 className="text-lg font-bold text-text-primary">Hapus Transaksi Penjualan?</h3>
               <p className="mt-2 text-sm text-text-secondary">
-                Apakah Anda yakin ingin menghapus catatan transaksi penjualan ini?
+                Apakah Anda yakin ingin menghapus catatan transaksi <strong>"{deletingSale.product?.name || "Barang"}"</strong> ({deletingSale.quantity} pcs)?
               </p>
+              <div className="mt-3 rounded-xl bg-emerald/10 border border-emerald/20 p-3 text-xs text-emerald font-medium">
+                💡 <strong>Info:</strong> Stok barang sebanyak <strong>{deletingSale.quantity} pcs</strong> akan otomatis dikembalikan ke stok aktif gudang.
+              </div>
               <div className="mt-6 flex justify-end gap-3">
                 <button
                   onClick={() => setDeletingSale(null)}
@@ -754,7 +760,7 @@ export function SalesPage() {
                   onClick={handleDeleteSale}
                   className="rounded-xl bg-error px-5 py-2 text-sm font-semibold text-white hover:bg-error-hover cursor-pointer"
                 >
-                  Hapus
+                  Hapus & Kembalikan Stok
                 </button>
               </div>
             </motion.div>

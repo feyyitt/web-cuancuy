@@ -848,13 +848,80 @@ export const salesService = {
   async delete(id: string): Promise<{ error: string | null }> {
     if (isMissingCredentials) {
       const sales = getLocal<Sale[]>(STORAGE_KEYS.SALES, []);
+      const saleToDelete = sales.find((s) => s.id === id);
+
+      if (saleToDelete) {
+        // Restore stock to products
+        const products = getLocal<Product[]>(STORAGE_KEYS.PRODUCTS, []);
+        const product = products.find((p) => p.id === saleToDelete.product_id);
+
+        if (product) {
+          if (product.type === "bundle" && Array.isArray(product.bundle_items) && product.bundle_items.length > 0) {
+            // Restore combo bundle component stocks
+            for (const item of product.bundle_items) {
+              const comp = products.find((p) => p.id === item.product_id);
+              if (comp) {
+                comp.stock += item.quantity * saleToDelete.quantity;
+                comp.total_sold = Math.max(0, (comp.total_sold || 0) - item.quantity * saleToDelete.quantity);
+                comp.updated_at = new Date().toISOString();
+              }
+            }
+            product.stock += saleToDelete.quantity;
+            product.total_sold = Math.max(0, (product.total_sold || 0) - saleToDelete.quantity);
+          } else {
+            // Restore single product stock
+            product.stock += saleToDelete.quantity;
+            product.total_sold = Math.max(0, (product.total_sold || 0) - saleToDelete.quantity);
+          }
+          product.updated_at = new Date().toISOString();
+          setLocal(STORAGE_KEYS.PRODUCTS, products);
+        }
+      }
+
       const filtered = sales.filter((s) => s.id !== id);
       setLocal(STORAGE_KEYS.SALES, filtered);
       return { error: null };
     }
 
-    const { error } = await supabase.from("sales").delete().eq("id", id);
-    return { error: error ? "Gagal menghapus transaksi" : null };
+    try {
+      // 1. In Supabase mode, fetch sale first to get product_id & quantity for stock restoration
+      const { data: saleToDelete } = await supabase.from("sales").select("*").eq("id", id).single();
+
+      if (saleToDelete) {
+        const { data: product } = await supabase.from("products").select("*").eq("id", saleToDelete.product_id).single();
+        if (product) {
+          if (product.type === "bundle" && Array.isArray(product.bundle_items) && product.bundle_items.length > 0) {
+            for (const item of product.bundle_items) {
+              const { data: comp } = await supabase.from("products").select("stock, total_sold").eq("id", item.product_id).single();
+              if (comp) {
+                await supabase.from("products").update({
+                  stock: comp.stock + item.quantity * saleToDelete.quantity,
+                  total_sold: Math.max(0, (comp.total_sold || 0) - item.quantity * saleToDelete.quantity),
+                  updated_at: new Date().toISOString(),
+                }).eq("id", item.product_id);
+              }
+            }
+            await supabase.from("products").update({
+              stock: (product.stock || 0) + saleToDelete.quantity,
+              total_sold: Math.max(0, (product.total_sold || 0) - saleToDelete.quantity),
+              updated_at: new Date().toISOString(),
+            }).eq("id", saleToDelete.product_id);
+          } else {
+            await supabase.from("products").update({
+              stock: product.stock + saleToDelete.quantity,
+              total_sold: Math.max(0, (product.total_sold || 0) - saleToDelete.quantity),
+              updated_at: new Date().toISOString(),
+            }).eq("id", saleToDelete.product_id);
+          }
+        }
+      }
+
+      const { error } = await supabase.from("sales").delete().eq("id", id);
+      return { error: error ? error.message : null };
+    } catch (e: unknown) {
+      const err = e as Error;
+      return { error: err?.message || "Gagal menghapus transaksi" };
+    }
   },
 };
 
@@ -907,6 +974,39 @@ export const capitalService = {
 
     if (error) return { data: null, error: "Gagal menambah transaksi modal" };
     return { data: data as CapitalTransaction, error: null };
+  },
+
+  async updateTransaction(
+    id: string,
+    updates: Partial<CapitalFormData>
+  ): Promise<{ error: string | null }> {
+    if (updates.amount !== undefined && updates.amount <= 0) {
+      return { error: "Nominal harus lebih dari Rp0" };
+    }
+
+    if (isMissingCredentials) {
+      const items = getLocal<CapitalTransaction[]>(STORAGE_KEYS.CAPITAL, []);
+      const index = items.findIndex((c) => c.id === id);
+      if (index === -1) return { error: "Transaksi modal tidak ditemukan" };
+      items[index] = {
+        ...items[index],
+        ...updates,
+        amount: updates.amount !== undefined ? Number(updates.amount) : items[index].amount,
+      };
+      setLocal(STORAGE_KEYS.CAPITAL, items);
+      return { error: null };
+    }
+
+    const payload: any = { ...updates };
+    if (updates.amount !== undefined) payload.amount = Number(updates.amount);
+    if (updates.description !== undefined) payload.description = updates.description?.trim() || null;
+
+    const { error } = await supabase
+      .from("capital_transactions")
+      .update(payload)
+      .eq("id", id);
+
+    return { error: error ? error.message : null };
   },
 
   async delete(id: string): Promise<{ error: string | null }> {
