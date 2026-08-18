@@ -13,11 +13,10 @@ import {
   Trash2,
   PlusCircle,
   AlertTriangle,
-  CheckCircle2,
   X,
-  Layers,
   Tag,
   Boxes,
+  RefreshCw,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -49,8 +48,16 @@ export function ProductsPage() {
   });
 
   // Helper state for adding items to combo bundle
+  const [bundlePickerMode, setBundlePickerMode] = useState<"existing" | "custom">("existing");
   const [selectedBundleProdId, setSelectedBundleProdId] = useState<string>("");
   const [bundleItemQty, setBundleItemQty] = useState<number>(1);
+
+  // Quick custom item adding on the fly
+  const [customItemName, setCustomItemName] = useState("");
+  const [customItemHpp, setCustomItemHpp] = useState(2000);
+  const [customItemSell, setCustomItemSell] = useState(5000);
+  const [customItemQty, setCustomItemQty] = useState(1);
+  const [saveAsSingleCatalog, setSaveAsSingleCatalog] = useState(true);
 
   const loadProducts = async () => {
     setLoading(true);
@@ -93,6 +100,7 @@ export function ProductsPage() {
     });
     setSelectedBundleProdId(singleProducts[0]?.id || "");
     setBundleItemQty(1);
+    setBundlePickerMode("existing");
     setIsAddModalOpen(true);
   };
 
@@ -110,6 +118,37 @@ export function ProductsPage() {
     });
     setSelectedBundleProdId(singleProducts[0]?.id || "");
     setBundleItemQty(1);
+    setBundlePickerMode("existing");
+  };
+
+  // Quick Preset Tier Helper
+  const handleApplyQuickTier = (qty: number, discountPercent: number) => {
+    const normalTotal = formData.selling_price * qty;
+    const promoPrice = Math.round((normalTotal * (1 - discountPercent / 100)) / 1000) * 1000;
+    const currentTiers = formData.tier_pricing || [];
+
+    const existingIdx = currentTiers.findIndex((t) => t.min_qty === qty);
+    let updated: TierPricing[];
+    if (existingIdx >= 0) {
+      updated = [...currentTiers];
+      updated[existingIdx] = {
+        min_qty: qty,
+        price: promoPrice,
+        label: `Beli ${qty} pcs (Diskon ${discountPercent}%)`,
+      };
+    } else {
+      updated = [
+        ...currentTiers,
+        {
+          min_qty: qty,
+          price: promoPrice,
+          label: `Beli ${qty} pcs (Diskon ${discountPercent}%)`,
+        },
+      ];
+      updated.sort((a, b) => a.min_qty - b.min_qty);
+    }
+    setFormData({ ...formData, tier_pricing: updated });
+    toast.success(`Promo Tier ${qty} pcs ditambahkan!`);
   };
 
   // Add tier rule for single product
@@ -144,7 +183,7 @@ export function ProductsPage() {
     setFormData({ ...formData, tier_pricing: currentTiers });
   };
 
-  // Add component item to combo bundle
+  // Add component item from existing catalog to combo bundle
   const handleAddBundleItem = () => {
     if (!selectedBundleProdId) return;
     const prod = products.find((p) => p.id === selectedBundleProdId);
@@ -170,7 +209,6 @@ export function ProductsPage() {
       ];
     }
 
-    // Recalculate bundle base cost and normal price
     const totalCost = updatedItems.reduce((acc, it) => acc + it.purchase_price * it.quantity, 0);
     const totalNormal = updatedItems.reduce((acc, it) => acc + it.selling_price * it.quantity, 0);
 
@@ -181,6 +219,61 @@ export function ProductsPage() {
       selling_price: formData.selling_price > 0 ? formData.selling_price : Math.round((totalNormal * 0.85) / 1000) * 1000,
     });
     setBundleItemQty(1);
+    toast.success(`"${prod.name}" dimasukkan ke dalam paket kombo`);
+  };
+
+  // Add new custom item on the fly to combo bundle
+  const handleAddCustomBundleItem = async () => {
+    if (!customItemName.trim()) {
+      toast.error("Nama barang wajib diisi");
+      return;
+    }
+
+    let assignedProdId = `custom-item-${Date.now()}`;
+
+    // If user selected to also save to product catalog
+    if (saveAsSingleCatalog) {
+      const res = await productService.create({
+        name: customItemName.trim(),
+        description: "Komponen produk satuan",
+        type: "single",
+        purchase_price: Number(customItemHpp) || 0,
+        selling_price: Number(customItemSell) || 0,
+        stock: 50,
+        tier_pricing: [],
+        bundle_items: [],
+      });
+
+      if (res.data) {
+        addProduct(res.data);
+        assignedProdId = res.data.id;
+      }
+    }
+
+    const newItem: BundleItem = {
+      product_id: assignedProdId,
+      product_name: customItemName.trim(),
+      quantity: Number(customItemQty) || 1,
+      purchase_price: Number(customItemHpp) || 0,
+      selling_price: Number(customItemSell) || 0,
+    };
+
+    const currentItems = formData.bundle_items || [];
+    const updatedItems = [...currentItems, newItem];
+
+    const totalCost = updatedItems.reduce((acc, it) => acc + it.purchase_price * it.quantity, 0);
+    const totalNormal = updatedItems.reduce((acc, it) => acc + it.selling_price * it.quantity, 0);
+
+    setFormData({
+      ...formData,
+      bundle_items: updatedItems,
+      purchase_price: totalCost,
+      selling_price: formData.selling_price > 0 ? formData.selling_price : Math.round((totalNormal * 0.85) / 1000) * 1000,
+    });
+
+    setCustomItemName("");
+    setCustomItemQty(1);
+    toast.success(`Barang baru "${newItem.product_name}" berhasil ditambahkan ke paket kombo!`);
   };
 
   const handleRemoveBundleItem = (index: number) => {
@@ -194,6 +287,20 @@ export function ProductsPage() {
       purchase_price: totalCost,
     });
   };
+
+  // Auto calculate max bundle stock from component inventory
+  const maxPossibleBundleStock = useMemo(() => {
+    if (!formData.bundle_items || formData.bundle_items.length === 0) return 0;
+    let minStock = Infinity;
+    for (const it of formData.bundle_items) {
+      const comp = products.find((p) => p.id === it.product_id);
+      if (comp) {
+        const available = Math.floor(comp.stock / (it.quantity || 1));
+        if (available < minStock) minStock = available;
+      }
+    }
+    return minStock === Infinity ? 50 : minStock;
+  }, [formData.bundle_items, products]);
 
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -253,80 +360,80 @@ export function ProductsPage() {
 
   const handleRestockSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!restockingProduct || restockAmount <= 0) return;
+    if (!restockingProduct) return;
+    if (restockAmount <= 0) {
+      toast.error("Jumlah tambahan stok harus lebih dari 0");
+      return;
+    }
+
     const res = await productService.addStock(restockingProduct.id, restockAmount);
     if (res.error) {
       toast.error(res.error);
     } else {
       updateProduct({
         ...restockingProduct,
-        stock: (restockingProduct.stock || 0) + restockAmount,
+        stock: restockingProduct.stock + restockAmount,
+        updated_at: new Date().toISOString(),
       });
-      toast.success(`Stok ${restockingProduct.name} bertambah +${restockAmount} pcs`);
+      toast.success(`Stok "${restockingProduct.name}" bertambah +${restockAmount} pcs`);
       setRestockingProduct(null);
       setRestockAmount(10);
     }
   };
 
-  // Filtered and sorted products
+  // Filter and sort products
   const filteredProducts = useMemo(() => {
-    const list = Array.isArray(products) ? products : [];
-    return list
+    return products
       .filter((p) => {
-        if (!p) return false;
-        const name = (p.name || "").toLowerCase();
-        const desc = (p.description || "").toLowerCase();
-        const q = search.toLowerCase().trim();
-        const matchesSearch = !q || name.includes(q) || desc.includes(q);
+        const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase());
         if (!matchesSearch) return false;
 
         if (stockFilter === "single") return p.type !== "bundle";
         if (stockFilter === "bundle") return p.type === "bundle";
-        if (stockFilter === "low") return (p.stock || 0) <= 10;
-        if (stockFilter === "in_stock") return (p.stock || 0) > 0;
+        if (stockFilter === "low") return p.stock <= 10;
+        if (stockFilter === "in_stock") return p.stock > 0;
         return true;
       })
       .sort((a, b) => {
-        if (!a || !b) return 0;
-        if (sortBy === "name") return (a.name || "").localeCompare(b.name || "");
+        if (sortBy === "name") return a.name.localeCompare(b.name);
+        if (sortBy === "stock") return a.stock - b.stock;
+        if (sortBy === "sold") return (b.total_sold || 0) - (a.total_sold || 0);
         if (sortBy === "profit") {
-          const profitA = calculateProfitPerPiece(a.purchase_price || 0, a.selling_price || 0);
-          const profitB = calculateProfitPerPiece(b.purchase_price || 0, b.selling_price || 0);
+          const profitA = calculateProfitPerPiece(a.purchase_price, a.selling_price);
+          const profitB = calculateProfitPerPiece(b.purchase_price, b.selling_price);
           return profitB - profitA;
         }
         if (sortBy === "margin") {
-          const marginA = calculateMargin(a.purchase_price || 0, a.selling_price || 0);
-          const marginB = calculateMargin(b.purchase_price || 0, b.selling_price || 0);
+          const marginA = calculateMargin(a.purchase_price, a.selling_price);
+          const marginB = calculateMargin(b.purchase_price, b.selling_price);
           return marginB - marginA;
         }
-        if (sortBy === "stock") return (b.stock || 0) - (a.stock || 0);
-        if (sortBy === "sold") return (b.total_sold || 0) - (a.total_sold || 0);
         return 0;
       });
-  }, [products, search, sortBy, stockFilter]);
+  }, [products, search, stockFilter, sortBy]);
 
-  // Live bundle metrics for modal
+  // Calculations for bundle preview
   const bundleMetrics = useMemo(() => {
-    if (formData.type !== "bundle") return null;
-    return calculateBundleMetrics(formData.bundle_items || [], formData.selling_price);
+    if (formData.type !== "bundle" || !formData.bundle_items) return null;
+    return calculateBundleMetrics(formData.bundle_items, formData.selling_price);
   }, [formData.type, formData.bundle_items, formData.selling_price]);
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Page Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-text-primary">Daftar Produk & Bundling</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-text-primary">Daftar Produk & Paket</h1>
           <p className="mt-1 text-sm text-text-secondary">
-            Kelola harga modal, harga jual satuan, aturan custom bundling grosir, dan paket kombo.
+            Kelola produk satuan, aturan harga bundling multi-pcs, dan paket kombo campuran.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => handleOpenAdd("bundle")}
-            className="flex items-center gap-2 rounded-xl border border-emerald/30 bg-emerald/10 px-3.5 py-2.5 text-sm font-semibold text-emerald hover:bg-emerald/20 transition-all cursor-pointer"
+            className="flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-semibold text-text-primary hover:bg-elevated hover:border-emerald/40 transition-colors cursor-pointer"
           >
-            <Layers className="h-4 w-4" />
+            <Boxes className="h-4 w-4 text-emerald" />
             <span>+ Buat Paket Kombo</span>
           </button>
           <button
@@ -339,9 +446,8 @@ export function ProductsPage() {
         </div>
       </div>
 
-      {/* Search and Filters Bar */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        {/* Search */}
+      {/* Filter and Search Bar */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between rounded-2xl border border-border bg-card p-4">
         <div className="relative flex-1">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-text-muted" />
           <input
@@ -349,261 +455,191 @@ export function ProductsPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Cari produk atau paket kombo..."
-            className="w-full rounded-xl border border-border bg-card pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-emerald focus:outline-none focus:ring-1 focus:ring-emerald transition-colors"
+            className="w-full rounded-xl border border-border bg-elevated pl-10 pr-4 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-emerald focus:outline-none transition-colors"
           />
-          {search && (
-            <button
-              onClick={() => setSearch("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          )}
         </div>
 
-        {/* Filter Type & Stock & Sort */}
-        <div className="flex items-center gap-2 overflow-x-auto">
+        <div className="flex flex-wrap items-center gap-2">
           <select
             value={stockFilter}
             onChange={(e) => setStockFilter(e.target.value as any)}
-            className="rounded-xl border border-border bg-card px-3.5 py-2.5 text-xs sm:text-sm text-text-primary focus:border-emerald focus:outline-none transition-colors cursor-pointer whitespace-nowrap"
+            className="rounded-xl border border-border bg-elevated px-3 py-2 text-xs font-semibold text-text-primary focus:border-emerald focus:outline-none cursor-pointer"
           >
-            <option value="all">Semua Produk & Paket</option>
-            <option value="single">Produk Satuan</option>
+            <option value="all">Semua ({products.length})</option>
+            <option value="single">🏷️ Produk Satuan</option>
             <option value="bundle">📦 Paket Kombo</option>
             <option value="low">⚠️ Stok Menipis (≤10)</option>
-            <option value="in_stock">Tersedia (&gt;0)</option>
+            <option value="in_stock">✅ Ada Stok</option>
           </select>
 
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as any)}
-            className="rounded-xl border border-border bg-card px-3.5 py-2.5 text-xs sm:text-sm text-text-primary focus:border-emerald focus:outline-none transition-colors cursor-pointer whitespace-nowrap"
+            className="rounded-xl border border-border bg-elevated px-3 py-2 text-xs font-semibold text-text-primary focus:border-emerald focus:outline-none cursor-pointer"
           >
-            <option value="name">Urutkan: Nama A-Z</option>
-            <option value="profit">Untung Terbesar / pcs</option>
-            <option value="margin">Margin Tertinggi (%)</option>
-            <option value="stock">Stok Terbanyak</option>
-            <option value="sold">Paling Banyak Terjual</option>
+            <option value="name">Urut: Nama A-Z</option>
+            <option value="profit">Urut: Keuntungan Tertinggi</option>
+            <option value="margin">Urut: Margin % Tertinggi</option>
+            <option value="stock">Urut: Stok Paling Sedikit</option>
+            <option value="sold">Urut: Paling Banyak Terjual</option>
           </select>
         </div>
       </div>
 
-      {/* Product List / Grid */}
+      {/* Product Cards Grid */}
       {isLoading ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="h-56 rounded-2xl border border-border bg-card animate-pulse p-6" />
-          ))}
-        </div>
+        <div className="p-12 text-center text-sm text-text-muted">Memuat daftar produk...</div>
       ) : filteredProducts.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card px-6 py-16 text-center">
+        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card/40 p-12 text-center">
           <div className="rounded-2xl bg-elevated p-4">
-            <Package className="h-10 w-10 text-text-muted" />
+            <Package className="h-8 w-8 text-text-muted" />
           </div>
-          <h3 className="mt-4 text-base font-semibold text-text-primary">
-            {search ? "Tidak ada produk yang cocok" : "Belum ada produk terdaftar"}
-          </h3>
-          <p className="mt-1 text-sm text-text-secondary max-w-sm">
-            {search
-              ? "Coba gunakan kata kunci pencarian yang lain."
-              : "Tambahkan produk satuan atau paket kombo bundling untuk mulai mencatat stok dan penjualan."}
+          <p className="mt-3 text-sm font-semibold text-text-primary">Tidak ada produk ditemukan</p>
+          <p className="mt-1 text-xs text-text-muted">
+            Coba ubah kata kunci pencarian atau buat produk baru.
           </p>
-          <div className="mt-5 flex gap-2">
-            <button
-              onClick={() => handleOpenAdd("single")}
-              className="flex items-center gap-2 rounded-xl bg-emerald px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-hover transition-colors shadow-md shadow-emerald/20 cursor-pointer"
-            >
-              <Plus className="h-4 w-4" />
-              Tambah Produk Baru
-            </button>
-          </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {filteredProducts.map((p) => {
-            const purchasePrice = Number(p.purchase_price) || 0;
-            const sellingPrice = Number(p.selling_price) || 0;
-            const currentStock = Number(p.stock) || 0;
-            const soldCount = Number(p.total_sold) || 0;
-            const isBundle = p.type === "bundle";
-
-            const profitPerPcs = calculateProfitPerPiece(purchasePrice, sellingPrice);
-            const margin = calculateMargin(purchasePrice, sellingPrice);
-            const isLowStock = currentStock <= 10 && currentStock > 0;
-            const isOutOfStock = currentStock === 0;
-            const hasTiers = p.tier_pricing && p.tier_pricing.length > 0;
+            const isCombo = p.type === "bundle";
+            const profit = calculateProfitPerPiece(p.purchase_price, p.selling_price);
+            const margin = calculateMargin(p.purchase_price, p.selling_price);
+            const hasTiers = !isCombo && p.tier_pricing && p.tier_pricing.length > 0;
 
             return (
               <div
                 key={p.id}
-                className={`group relative flex flex-col justify-between rounded-2xl border p-5 transition-all duration-200 hover:shadow-lg ${
-                  isBundle
-                    ? "border-emerald/40 bg-card hover:border-emerald/60"
-                    : "border-border bg-card hover:border-emerald/40"
+                className={`rounded-2xl border bg-card p-5 transition-all flex flex-col justify-between hover:shadow-lg ${
+                  isCombo ? "border-emerald/40 bg-gradient-to-b from-emerald/5 to-card" : "border-border"
                 }`}
               >
                 <div>
-                  {/* Card Header & Badges */}
+                  {/* Top Badges & Actions */}
                   <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <h3 className="font-bold text-text-primary text-base truncate" title={p.name}>
-                          {p.name}
-                        </h3>
-                        {isBundle ? (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-emerald/15 px-2 py-0.5 text-[10px] font-extrabold text-emerald uppercase tracking-wider border border-emerald/30">
-                            <Layers className="h-3 w-3" />
-                            Paket Kombo
-                          </span>
-                        ) : hasTiers ? (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-amber/15 px-2 py-0.5 text-[10px] font-extrabold text-amber uppercase tracking-wider border border-amber/30">
-                            <Tag className="h-3 w-3" />
-                            Promo Bundling
-                          </span>
-                        ) : null}
-                      </div>
-                      {p.description && (
-                        <p className="mt-0.5 text-xs text-text-muted line-clamp-1" title={p.description}>
-                          {p.description}
-                        </p>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {isCombo ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald/15 px-2.5 py-0.5 text-xs font-bold text-emerald border border-emerald/30">
+                          <Boxes className="h-3 w-3" />
+                          Paket Kombo
+                        </span>
+                      ) : hasTiers ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber/15 px-2.5 py-0.5 text-xs font-bold text-amber border border-amber/30">
+                          <Tag className="h-3 w-3" />
+                          Promo Multi-Buy
+                        </span>
+                      ) : (
+                        <span className="rounded-full bg-elevated px-2.5 py-0.5 text-xs font-medium text-text-muted border border-border">
+                          Satuan
+                        </span>
+                      )}
+
+                      {p.stock <= 5 && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-error/15 px-2 py-0.5 text-[10px] font-bold text-error border border-error/30">
+                          <AlertTriangle className="h-2.5 w-2.5" />
+                          Sisa {p.stock}
+                        </span>
                       )}
                     </div>
 
-                    {/* Action buttons */}
-                    <div className="flex items-center gap-1 opacity-90 group-hover:opacity-100 transition-opacity">
-                      {!isBundle && (
-                        <button
-                          onClick={() => setRestockingProduct(p)}
-                          title="Tambah Stok"
-                          className="rounded-lg p-1.5 text-text-muted hover:bg-emerald/10 hover:text-emerald transition-colors cursor-pointer"
-                        >
-                          <PlusCircle className="h-4 w-4" />
-                        </button>
-                      )}
+                    <div className="flex items-center gap-1">
                       <button
                         onClick={() => handleOpenEdit(p)}
                         title="Edit Produk"
                         className="rounded-lg p-1.5 text-text-muted hover:bg-elevated hover:text-text-primary transition-colors cursor-pointer"
                       >
-                        <Edit2 className="h-4 w-4" />
+                        <Edit2 className="h-3.5 w-3.5" />
                       </button>
                       <button
                         onClick={() => setDeletingProduct(p)}
                         title="Hapus Produk"
                         className="rounded-lg p-1.5 text-text-muted hover:bg-error/10 hover:text-error transition-colors cursor-pointer"
                       >
-                        <Trash2 className="h-4 w-4" />
+                        <Trash2 className="h-3.5 w-3.5" />
                       </button>
                     </div>
                   </div>
 
-                  {/* Bundle Included Items Details */}
-                  {isBundle && p.bundle_items && p.bundle_items.length > 0 && (
-                    <div className="mt-3 rounded-xl bg-elevated/40 p-2.5 border border-border/60">
-                      <span className="text-[10px] font-bold text-text-muted uppercase tracking-wider block mb-1">
-                        Isi Paket Kombo:
+                  {/* Product Title & Description */}
+                  <h3 className="mt-3 text-base font-bold text-text-primary tracking-tight">{p.name}</h3>
+                  {p.description && (
+                    <p className="mt-0.5 text-xs text-text-secondary line-clamp-2">{p.description}</p>
+                  )}
+
+                  {/* If Combo Bundle: Contents Preview */}
+                  {isCombo && p.bundle_items && p.bundle_items.length > 0 && (
+                    <div className="mt-3 rounded-xl bg-elevated/60 p-2.5 border border-border/80 space-y-1">
+                      <span className="text-[10px] font-bold text-emerald uppercase tracking-wider block">
+                        Isi Dalam Paket:
                       </span>
-                      <div className="space-y-1">
-                        {p.bundle_items.map((it, idx) => (
-                          <div key={idx} className="flex items-center justify-between text-xs text-text-secondary">
-                            <span>• {it.quantity}x {it.product_name}</span>
-                            <span className="text-[11px] text-text-muted">
-                              (Modal: {formatCurrency(it.purchase_price * it.quantity)})
-                            </span>
-                          </div>
-                        ))}
-                      </div>
+                      {p.bundle_items.map((it, idx) => (
+                        <div key={idx} className="flex justify-between text-xs text-text-secondary">
+                          <span>• {it.quantity}x {it.product_name}</span>
+                          <span className="text-text-muted text-[11px]">
+                            ({formatCurrency(it.purchase_price * it.quantity)})
+                          </span>
+                        </div>
+                      ))}
                     </div>
                   )}
 
-                  {/* Tier Pricing Badges for Single Products */}
-                  {!isBundle && hasTiers && (
-                    <div className="mt-3 flex flex-wrap gap-1.5">
+                  {/* If Single Product: Tier Pricing Chips */}
+                  {hasTiers && (
+                    <div className="mt-3 flex flex-wrap gap-1">
                       {p.tier_pricing?.map((t, idx) => (
                         <span
                           key={idx}
-                          className="inline-flex items-center gap-1 rounded-lg bg-emerald/10 px-2 py-0.5 text-[11px] font-semibold text-emerald border border-emerald/20"
+                          className="inline-flex items-center gap-1 rounded-md bg-amber/10 border border-amber/20 px-2 py-0.5 text-[11px] font-semibold text-amber"
                         >
-                          <Tag className="h-3 w-3" />
-                          Beli {t.min_qty} pcs: <strong>{formatCurrency(t.price)}</strong>
+                          Beli {t.min_qty} pcs: {formatCurrency(t.price)}
                         </span>
                       ))}
                     </div>
                   )}
 
-                  {/* Pricing Grid */}
-                  <div className="mt-4 grid grid-cols-2 gap-2 rounded-xl bg-elevated/60 p-3">
+                  {/* Price & Profit Details */}
+                  <div className="mt-4 grid grid-cols-2 gap-2 rounded-xl bg-elevated/40 p-3 border border-border text-xs">
                     <div>
-                      <span className="text-[11px] font-medium text-text-muted uppercase">
-                        {isBundle ? "Total Modal Pokok" : "Harga Beli"}
+                      <span className="text-text-muted block text-[11px]">Modal Pokok (HPP):</span>
+                      <strong className="text-text-primary tabular-nums font-semibold">
+                        {formatCurrency(p.purchase_price)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="text-text-muted block text-[11px]">
+                        {isCombo ? "Harga Jual Paket:" : "Harga Jual / pcs:"}
                       </span>
-                      <p className="text-sm font-semibold tabular-nums text-text-secondary">
-                        {formatCurrency(purchasePrice)}
-                      </p>
+                      <strong className="text-text-primary tabular-nums font-bold">
+                        {formatCurrency(p.selling_price)}
+                      </strong>
                     </div>
-                    <div>
-                      <span className="text-[11px] font-medium text-text-muted uppercase">
-                        {isBundle ? "Harga Paket" : "Harga Jual Satuan"}
-                      </span>
-                      <p className="text-sm font-bold tabular-nums text-text-primary">
-                        {formatCurrency(sellingPrice)}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Profit & Margin Highlights */}
-                  <div className="mt-3 flex items-center justify-between px-1">
-                    <div>
-                      <span className="text-xs text-text-muted">Keuntungan:</span>
-                      <p className="text-sm font-bold tabular-nums text-emerald">
-                        +{formatCurrency(profitPerPcs)}
-                        <span className="text-[11px] font-normal text-text-muted"> {isBundle ? "/ paket" : "/ pcs"}</span>
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <span className="text-xs text-text-muted">Margin:</span>
-                      <p className="text-sm font-bold tabular-nums text-emerald">
-                        {formatMargin(margin)}
-                      </p>
+                    <div className="col-span-2 border-t border-border/60 pt-2 flex items-center justify-between">
+                      <span className="text-text-muted text-[11px]">Laba Bersih:</span>
+                      <strong className="text-emerald font-bold tabular-nums">
+                        +{formatCurrency(profit)} ({formatMargin(margin)})
+                      </strong>
                     </div>
                   </div>
                 </div>
 
-                {/* Bottom Stock Bar */}
-                <div className="mt-4 pt-3 border-t border-border/60 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${
-                        isOutOfStock
-                          ? "bg-error/10 text-error border border-error/20"
-                          : isLowStock
-                          ? "bg-amber/10 text-amber border border-amber/20"
-                          : "bg-emerald/10 text-emerald border border-emerald/20"
-                      }`}
-                    >
-                      {isOutOfStock ? (
-                        <>
-                          <AlertTriangle className="h-3 w-3" />
-                          Habis (0 {isBundle ? "paket" : "pcs"})
-                        </>
-                      ) : isLowStock ? (
-                        <>
-                          <AlertTriangle className="h-3 w-3" />
-                          Stok: {formatNumber(currentStock)} {isBundle ? "paket" : "pcs"}
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle2 className="h-3 w-3" />
-                          Stok: {formatNumber(currentStock)} {isBundle ? "paket" : "pcs"}
-                        </>
-                      )}
-                    </span>
+                {/* Bottom Stock & Quick Restock */}
+                <div className="mt-4 pt-3 border-t border-border flex items-center justify-between">
+                  <div className="text-xs">
+                    <span className="text-text-muted">Stok: </span>
+                    <strong className="font-bold text-text-primary">{p.stock}</strong>
+                    <span className="text-text-muted"> {isCombo ? "paket" : "pcs"}</span>
                   </div>
 
-                  <span className="text-xs text-text-muted tabular-nums">
-                    Terjual: <strong>{formatNumber(soldCount)}</strong> {isBundle ? "paket" : "pcs"}
-                  </span>
+                  <button
+                    onClick={() => {
+                      setRestockingProduct(p);
+                      setRestockAmount(10);
+                    }}
+                    className="flex items-center gap-1 text-xs font-semibold text-emerald hover:text-emerald-hover cursor-pointer"
+                  >
+                    <PlusCircle className="h-3.5 w-3.5" />
+                    <span>+ Tambah Stok</span>
+                  </button>
                 </div>
               </div>
             );
@@ -611,7 +647,7 @@ export function ProductsPage() {
         </div>
       )}
 
-      {/* ADD / EDIT PRODUCT MODAL */}
+      {/* CREATE & EDIT MODAL */}
       <AnimatePresence>
         {(isAddModalOpen || editingProduct) && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -629,17 +665,21 @@ export function ProductsPage() {
               initial={{ opacity: 0, scale: 0.95, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              className="relative z-10 w-full max-w-xl rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-2xl max-h-[90vh] overflow-y-auto"
+              className="relative z-10 w-full max-w-lg rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-2xl overflow-y-auto max-h-[90vh]"
             >
-              <div className="flex items-center justify-between border-b border-border pb-4">
-                <div>
-                  <h3 className="text-lg font-bold text-text-primary">
-                    {editingProduct ? "Edit Data Produk / Bundling" : "Tambah Produk / Paket Bundling"}
-                  </h3>
-                  <p className="text-xs text-text-muted mt-0.5">
-                    Konfigurasikan produk satuan atau paket kombo bundling multi-barang.
-                  </p>
-                </div>
+              <div className="flex items-center justify-between border-b border-border pb-3.5">
+                <h3 className="text-base font-bold text-text-primary flex items-center gap-2">
+                  {formData.type === "bundle" ? (
+                    <Boxes className="h-5 w-5 text-emerald" />
+                  ) : (
+                    <Package className="h-5 w-5 text-emerald" />
+                  )}
+                  {editingProduct
+                    ? `Edit: ${editingProduct.name}`
+                    : formData.type === "bundle"
+                    ? "Buat Paket Kombo Campuran"
+                    : "Tambah Produk Satuan"}
+                </h3>
                 <button
                   onClick={() => {
                     setIsAddModalOpen(false);
@@ -692,7 +732,7 @@ export function ProductsPage() {
                         : "text-text-muted hover:text-text-primary"
                     }`}
                   >
-                    <Layers className="h-4 w-4" />
+                    <Boxes className="h-4 w-4" />
                     <span>📦 Paket Kombo Campuran</span>
                   </button>
                 </div>
@@ -711,8 +751,8 @@ export function ProductsPage() {
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                     placeholder={
                       formData.type === "bundle"
-                        ? "Contoh: Paket Hemat Pin + Stiker"
-                        : "Contoh: Stiker Vinyl / Pin Bros"
+                        ? "Contoh: Paket Hemat Stiker + Pin Bros"
+                        : "Contoh: Stiker Vinyl / Pin Bros 44mm"
                     }
                     required
                     className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-emerald focus:outline-none focus:ring-1 focus:ring-emerald transition-colors"
@@ -733,7 +773,7 @@ export function ProductsPage() {
                   />
                 </div>
 
-                {/* ================= IF COMBO BUNDLE: SELECT COMPONENT ITEMS ================= */}
+                {/* ================= IF COMBO BUNDLE: SELECT / CREATE COMPONENT ITEMS ================= */}
                 {formData.type === "bundle" && (
                   <div className="rounded-xl border border-emerald/30 bg-emerald/5 p-4 space-y-3">
                     <div className="flex items-center justify-between">
@@ -746,39 +786,152 @@ export function ProductsPage() {
                       </span>
                     </div>
 
-                    {/* Item Picker Row */}
-                    <div className="flex gap-2 items-center">
-                      <select
-                        value={selectedBundleProdId}
-                        onChange={(e) => setSelectedBundleProdId(e.target.value)}
-                        className="flex-1 rounded-xl border border-border bg-card px-3 py-2 text-xs text-text-primary focus:border-emerald focus:outline-none cursor-pointer"
-                      >
-                        {singleProducts.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} (Modal: {formatCurrency(p.purchase_price)}, Normal: {formatCurrency(p.selling_price)})
-                          </option>
-                        ))}
-                      </select>
-
-                      <div className="w-20">
-                        <input
-                          type="number"
-                          min="1"
-                          value={bundleItemQty}
-                          onChange={(e) => setBundleItemQty(Math.max(1, Number(e.target.value)))}
-                          className="w-full rounded-xl border border-border bg-card px-2.5 py-2 text-xs text-center font-bold text-text-primary focus:border-emerald focus:outline-none"
-                          placeholder="Qty"
-                        />
-                      </div>
-
+                    {/* Sub Tab: Existing Catalog vs Custom Add */}
+                    <div className="grid grid-cols-2 gap-1 bg-elevated/80 p-1 rounded-xl border border-border">
                       <button
                         type="button"
-                        onClick={handleAddBundleItem}
-                        className="rounded-xl bg-emerald px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-hover transition-colors cursor-pointer whitespace-nowrap"
+                        onClick={() => setBundlePickerMode("existing")}
+                        className={`py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                          bundlePickerMode === "existing"
+                            ? "bg-card text-emerald shadow-xs"
+                            : "text-text-muted hover:text-text-primary"
+                        }`}
                       >
-                        + Tambah
+                        Pilih dari Produk Ada
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBundlePickerMode("custom")}
+                        className={`py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                          bundlePickerMode === "custom"
+                            ? "bg-card text-emerald shadow-xs"
+                            : "text-text-muted hover:text-text-primary"
+                        }`}
+                      >
+                        + Tambah Barang Baru
                       </button>
                     </div>
+
+                    {/* Mode 1: Choose from Existing Products */}
+                    {bundlePickerMode === "existing" && (
+                      <div className="flex gap-2 items-center">
+                        {singleProducts.length === 0 ? (
+                          <p className="text-xs text-text-muted py-1 flex-1">
+                            Belum ada produk satuan di katalog. Gunakan tab "+ Tambah Barang Baru" di sebelah.
+                          </p>
+                        ) : (
+                          <>
+                            <select
+                              value={selectedBundleProdId}
+                              onChange={(e) => setSelectedBundleProdId(e.target.value)}
+                              className="flex-1 rounded-xl border border-border bg-card px-3 py-2 text-xs text-text-primary focus:border-emerald focus:outline-none cursor-pointer"
+                            >
+                              {singleProducts.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.name} (Modal: {formatCurrency(p.purchase_price)}, Jual: {formatCurrency(p.selling_price)})
+                                </option>
+                              ))}
+                            </select>
+
+                            <div className="w-20">
+                              <input
+                                type="number"
+                                min="1"
+                                value={bundleItemQty}
+                                onChange={(e) => setBundleItemQty(Math.max(1, Number(e.target.value)))}
+                                className="w-full rounded-xl border border-border bg-card px-2.5 py-2 text-xs text-center font-bold text-text-primary focus:border-emerald focus:outline-none"
+                                placeholder="Qty"
+                              />
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={handleAddBundleItem}
+                              className="rounded-xl bg-emerald px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-hover transition-colors cursor-pointer whitespace-nowrap"
+                            >
+                              + Masukkan
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Mode 2: Quick Create New Item On The Fly */}
+                    {bundlePickerMode === "custom" && (
+                      <div className="rounded-xl bg-card p-3 border border-border space-y-2.5">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-text-secondary uppercase mb-1">
+                            Nama Barang Baru
+                          </label>
+                          <input
+                            type="text"
+                            value={customItemName}
+                            onChange={(e) => setCustomItemName(e.target.value)}
+                            placeholder="Misal: Pin Bros 44mm / Gantungan Kunci"
+                            className="w-full rounded-lg border border-border bg-elevated px-3 py-1.5 text-xs text-text-primary focus:border-emerald focus:outline-none"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>
+                            <label className="block text-[11px] font-semibold text-text-secondary uppercase mb-1">
+                              Modal HPP (Rp)
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={customItemHpp === 0 ? "" : customItemHpp}
+                              onChange={(e) => setCustomItemHpp(Math.max(0, Number(e.target.value)))}
+                              className="w-full rounded-lg border border-border bg-elevated px-2.5 py-1.5 text-xs font-semibold tabular-nums focus:border-emerald focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-semibold text-text-secondary uppercase mb-1">
+                              Harga Satuan (Rp)
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={customItemSell === 0 ? "" : customItemSell}
+                              onChange={(e) => setCustomItemSell(Math.max(0, Number(e.target.value)))}
+                              className="w-full rounded-lg border border-border bg-elevated px-2.5 py-1.5 text-xs font-semibold tabular-nums focus:border-emerald focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-semibold text-text-secondary uppercase mb-1">
+                              Jumlah di Paket
+                            </label>
+                            <input
+                              type="number"
+                              min="1"
+                              value={customItemQty}
+                              onChange={(e) => setCustomItemQty(Math.max(1, Number(e.target.value)))}
+                              className="w-full rounded-lg border border-border bg-elevated px-2.5 py-1.5 text-xs font-bold text-center focus:border-emerald focus:outline-none"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-1">
+                          <label className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={saveAsSingleCatalog}
+                              onChange={(e) => setSaveAsSingleCatalog(e.target.checked)}
+                              className="rounded border-border text-emerald focus:ring-emerald cursor-pointer"
+                            />
+                            <span>Simpan ke katalog produk satuan</span>
+                          </label>
+
+                          <button
+                            type="button"
+                            onClick={handleAddCustomBundleItem}
+                            className="rounded-lg bg-emerald px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-hover transition-colors cursor-pointer"
+                          >
+                            + Tambahkan ke Paket
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Selected Component Items List */}
                     <div className="space-y-1.5 pt-1">
@@ -800,7 +953,7 @@ export function ProductsPage() {
                             <button
                               type="button"
                               onClick={() => handleRemoveBundleItem(idx)}
-                              className="text-text-muted hover:text-error transition-colors p-1"
+                              className="text-text-muted hover:text-error transition-colors p-1 cursor-pointer"
                             >
                               <X className="h-4 w-4" />
                             </button>
@@ -808,7 +961,7 @@ export function ProductsPage() {
                         ))
                       ) : (
                         <p className="text-xs text-text-muted text-center py-2">
-                          Pilih produk satuan di atas lalu klik "+ Tambah" untuk memasukkannya ke dalam paket ini.
+                          Pilih produk atau ketik barang baru di atas lalu klik "+ Masukkan".
                         </p>
                       )}
                     </div>
@@ -910,10 +1063,23 @@ export function ProductsPage() {
 
                 {/* Stock Input */}
                 <div>
-                  <label className="block text-xs font-semibold text-text-secondary uppercase mb-1">
-                    {formData.type === "bundle" ? "Stok Paket Kombo Siap Jual" : "Jumlah Stok (pcs)"}{" "}
-                    <span className="text-error">*</span>
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-text-secondary uppercase">
+                      {formData.type === "bundle" ? "Stok Paket Kombo Siap Jual" : "Jumlah Stok (pcs)"}{" "}
+                      <span className="text-error">*</span>
+                    </label>
+                    {formData.type === "bundle" && maxPossibleBundleStock > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, stock: maxPossibleBundleStock })}
+                        className="text-[11px] text-emerald font-semibold flex items-center gap-1 hover:underline cursor-pointer"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                        <span>Samakan Stok Komponen ({maxPossibleBundleStock} paket)</span>
+                      </button>
+                    )}
+                  </div>
+
                   <input
                     type="number"
                     min="0"
@@ -955,6 +1121,27 @@ export function ProductsPage() {
                       >
                         + Tambah Tier
                       </button>
+                    </div>
+
+                    {/* Quick Preset Buttons */}
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      <span className="text-[10px] text-text-muted uppercase font-bold py-1 mr-1">Rekomendasi:</span>
+                      {[
+                        { qty: 2, disc: 15 },
+                        { qty: 3, disc: 20 },
+                        { qty: 5, disc: 25 },
+                        { qty: 10, disc: 30 },
+                        { qty: 12, disc: 35 },
+                      ].map(({ qty, disc }) => (
+                        <button
+                          key={qty}
+                          type="button"
+                          onClick={() => handleApplyQuickTier(qty, disc)}
+                          className="rounded-lg border border-border bg-card px-2 py-1 text-[11px] font-semibold text-text-secondary hover:text-emerald hover:border-emerald/40 transition-colors cursor-pointer"
+                        >
+                          + Beli {qty} pcs (-{disc}%)
+                        </button>
+                      ))}
                     </div>
 
                     {formData.tier_pricing && formData.tier_pricing.length > 0 ? (
@@ -1010,7 +1197,7 @@ export function ProductsPage() {
                                 <button
                                   type="button"
                                   onClick={() => handleRemoveTier(idx)}
-                                  className="text-text-muted hover:text-error transition-colors p-1"
+                                  className="text-text-muted hover:text-error transition-colors p-1 cursor-pointer"
                                 >
                                   <Trash2 className="h-4 w-4" />
                                 </button>
@@ -1021,7 +1208,7 @@ export function ProductsPage() {
                       </div>
                     ) : (
                       <p className="text-[11px] text-text-muted text-center py-1">
-                        Belum ada aturan harga grosir. Klik "+ Tambah Tier" untuk membuat promo beli banyak lebih murah.
+                        Belum ada aturan harga grosir. Klik tombol rekomendasi di atas untuk membuat promo beli banyak lebih murah.
                       </p>
                     )}
                   </div>

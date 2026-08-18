@@ -439,7 +439,13 @@ export const productService = {
           if (fbError) {
             return { data: null, error: fbError.message };
           }
-          return { data: fbData as Product, error: null };
+          const createdWithMetadata: Product = {
+            ...fbData,
+            type: formData.type || "single",
+            tier_pricing: formData.tier_pricing || [],
+            bundle_items: formData.bundle_items || [],
+          };
+          return { data: createdWithMetadata, error: null };
         }
 
         if (error.message.includes("duplicate") || error.code === "23505") {
@@ -542,7 +548,7 @@ export const productService = {
       return { error: null };
     }
 
-    const { data: product } = await supabase.from("products").select("stock").eq("id", id).single();
+    const { data: product } = await supabase.from("products").select("stock").eq("id", id).maybeSingle();
     if (!product) return { error: "Produk tidak ditemukan" };
 
     const { error } = await supabase
@@ -575,14 +581,14 @@ export const salesService = {
 
       // Handle Bundle Combo Sale (Deduct component stocks)
       if (product.type === "bundle" && Array.isArray(product.bundle_items) && product.bundle_items.length > 0) {
-        // 1. Check stock for each component item
+        // 1. Check stock for each component item (if found)
         for (const item of product.bundle_items) {
           const component = products.find((p) => p.id === item.product_id);
           const requiredStock = item.quantity * quantity;
-          if (!component || component.stock < requiredStock) {
+          if (component && component.stock < requiredStock) {
             return {
               data: null,
-              error: `Stok komponen "${item.product_name}" tidak mencukupi (Butuh ${requiredStock}, Tersedia ${component?.stock || 0})`,
+              error: `Stok komponen "${item.product_name}" tidak mencukupi (Butuh ${requiredStock}, Tersedia ${component.stock})`,
             };
           }
         }
@@ -591,13 +597,13 @@ export const salesService = {
         for (const item of product.bundle_items) {
           const component = products.find((p) => p.id === item.product_id);
           if (component) {
-            component.stock -= item.quantity * quantity;
+            component.stock = Math.max(0, component.stock - item.quantity * quantity);
             component.total_sold = (component.total_sold || 0) + item.quantity * quantity;
             component.updated_at = new Date().toISOString();
           }
         }
 
-        product.stock = Math.max(0, product.stock - quantity);
+        product.stock = Math.max(0, (product.stock || 0) - quantity);
         product.total_sold = (product.total_sold || 0) + quantity;
         product.updated_at = new Date().toISOString();
         setLocal(STORAGE_KEYS.PRODUCTS, products);
@@ -688,25 +694,25 @@ export const salesService = {
         .from("products")
         .select("*")
         .eq("id", productId)
-        .single();
+        .maybeSingle();
 
       if (fetchErr || !product) return { data: null, error: "Produk tidak ditemukan" };
 
       // 3. Handle Bundle Combo Sale vs Single Product Stock Deductions
       if (product.type === "bundle" && Array.isArray(product.bundle_items) && product.bundle_items.length > 0) {
         for (const item of product.bundle_items) {
-          const { data: comp } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
+          const { data: comp } = await supabase.from("products").select("stock").eq("id", item.product_id).maybeSingle();
           const req = item.quantity * quantity;
-          if (!comp || comp.stock < req) {
+          if (comp && comp.stock < req) {
             return {
               data: null,
-              error: `Stok komponen "${item.product_name}" tidak cukup (Tersedia ${comp?.stock || 0}, Butuh ${req})`,
+              error: `Stok komponen "${item.product_name}" tidak cukup (Tersedia ${comp.stock}, Butuh ${req})`,
             };
           }
         }
 
         for (const item of product.bundle_items) {
-          const { data: comp } = await supabase.from("products").select("stock, total_sold").eq("id", item.product_id).single();
+          const { data: comp } = await supabase.from("products").select("stock, total_sold").eq("id", item.product_id).maybeSingle();
           if (comp) {
             await supabase
               .from("products")
