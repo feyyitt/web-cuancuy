@@ -1,0 +1,185 @@
+@import "tailwindcss";
+
+@theme {
+  /* ===== Colors (Bound to CSS variables for dynamic Theme Switching) ===== */
+  --color-background: var(--bg-background);
+  --color-surface: var(--bg-surface);
+  --color-card: var(--bg-card);
+  --color-elevated: var(--bg-elevated);
+  --color-border: var(--border-color);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+
+  --color-emerald: #10B981;
+  --color-emerald-hover: #0D9668;
+  --color-emerald-light: #D1FAE5;
+  --color-emerald-dark: #065F46;
+
+  --color-amber: #F59E0B;
+  --color-amber-hover: #D97706;
+  --color-amber-light: #FEF3C7;
+
+  --color-error: #EF4444;
+  --color-error-hover: #DC2626;
+  --color-error-light: #FEE2E2;
+
+  --color-success: #22C55E;
+  --color-warning: #F59E0B;
+  --color-info: #3B82F6;
+
+  /* ===== Typography ===== */
+  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+  /* ===== Radius ===== */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+
+  /* ===== Shadows ===== */
+  --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.15), 0 1px 2px -1px rgba(0, 0, 0, 0.15);
+  --shadow-elevated: 0 4px 6px -1px rgba(0, 0, 0, 0.2), 0 2px 4px -2px rgba(0, 0, 0, 0.15);
+
+  /* ===== Animations ===== */
+  --animate-fade-in: fade-in 0.3s ease-out;
+  --animate-slide-up: slide-up 0.3s ease-out;
+  --animate-slide-down: slide-down 0.2s ease-out;
+  --animate-scale-in: scale-in 0.2s ease-out;
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes slide-up {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes slide-down {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes scale-in {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
+  }
+}
+
+/* ===== Dark Theme Variables (Default) ===== */
+:root {
+  --bg-background: #0F1115;
+  --bg-surface: #151922;
+  --bg-card: #1B2029;
+  --bg-elevated: #222833;
+  --border-color: #2A303A;
+
+  --text-primary: #F5F7FA;
+  --text-secondary: #A7AFBC;
+  --text-muted: #6F7885;
+}
+
+/* ===== Light Theme Variables ===== */
+.light,
+html[data-theme='light'] {
+  --bg-background: #F4F6F9;
+  --bg-surface: #FFFFFF;
+  --bg-card: #FFFFFF;
+  --bg-elevated: #EEF2F6;
+  --border-color: #E2E8F0;
+
+  --text-primary: #0F172A;
+  --text-secondary: #475569;
+  --text-muted: #94A3B8;
+}
+
+/* ===== Base Styles ===== */
+* {
+  border-color: var(--border-color);
+  -webkit-tap-highlight-color: transparent;
+  box-sizing: border-box;
+}
+
+html, body {
+  min-height: 100%;
+  overscroll-behavior-y: none;
+  background-color: var(--bg-background);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Safe Area Inset Helpers for Mobile Notches */
+.safe-area-bottom {
+  padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+}
+
+.safe-area-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* Responsive Table Touch Scrolling */
+.overflow-x-auto {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Form Inputs Mobile Fix: Prevent iOS Auto Zoom by ensuring min font-size */
+input, select, textarea {
+  font-size: 14px;
+}
+@media (max-width: 640px) {
+  input, select, textarea {
+    font-size: 16px;
+  }
+}
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* ===== Utility Classes ===== */
+.text-profit {
+  color: #10B981;
+}
+
+.text-loss {
+  color: #EF4444;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Print CSS */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  nav, button, .no-print {
+    display: none !important;
+  }
+}

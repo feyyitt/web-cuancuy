@@ -1,0 +1,21 @@
+{
+  "name": "Cuan Cuy — Kelola Bisnis Lebih Mudah",
+  "short_name": "Cuan Cuy",
+  "description": "Kelola penjualan dan keuntungan bisnis kamu dengan mudah.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0F1115",
+  "theme_color": "#10B981",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "64x64",
+      "type": "image/png"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
