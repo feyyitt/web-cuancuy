@@ -1,3 +1,5 @@
+import type { Product, TierPricing, BundleItem } from "@/types";
+
 /**
  * Calculate profit per piece.
  */
@@ -99,4 +101,100 @@ export function generatePriceScenarios(
  */
 export function formatMargin(margin: number): string {
   return `${margin.toFixed(2)}%`;
+}
+
+/**
+ * Calculate metrics for a Multi-Product Combo Bundle.
+ */
+export function calculateBundleMetrics(
+  items: (BundleItem | { purchase_price: number; selling_price: number; quantity: number })[],
+  bundleSellingPrice: number
+) {
+  const totalCost = items.reduce((acc, it) => acc + (Number(it.purchase_price) || 0) * (Number(it.quantity) || 1), 0);
+  const totalNormalPrice = items.reduce((acc, it) => acc + (Number(it.selling_price) || 0) * (Number(it.quantity) || 1), 0);
+  const bundleProfit = bundleSellingPrice - totalCost;
+  const discountAmount = Math.max(0, totalNormalPrice - bundleSellingPrice);
+  const discountPercent = totalNormalPrice > 0 ? (discountAmount / totalNormalPrice) * 100 : 0;
+  const margin = bundleSellingPrice > 0 ? (bundleProfit / bundleSellingPrice) * 100 : 0;
+
+  return {
+    totalCost,
+    totalNormalPrice,
+    bundleProfit,
+    discountAmount,
+    discountPercent,
+    margin,
+  };
+}
+
+/**
+ * Get effective total revenue, cost, profit, and applied tier for a single product based on quantity.
+ */
+export function getEffectivePricingForQuantity(
+  product: Product,
+  qty: number
+): {
+  totalRevenue: number;
+  totalCost: number;
+  totalProfit: number;
+  appliedTier: TierPricing | null;
+  discountSavings: number;
+  effectiveUnitPrice: number;
+} {
+  const normalUnitPrice = product.selling_price || 0;
+  const normalUnitCost = product.purchase_price || 0;
+  const totalCost = normalUnitCost * qty;
+
+  if (!product.tier_pricing || product.tier_pricing.length === 0 || qty <= 0) {
+    const totalRevenue = normalUnitPrice * qty;
+    return {
+      totalRevenue,
+      totalCost,
+      totalProfit: totalRevenue - totalCost,
+      appliedTier: null,
+      discountSavings: 0,
+      effectiveUnitPrice: normalUnitPrice,
+    };
+  }
+
+  // Sort tiers descending by min_qty
+  const sortedTiers = [...product.tier_pricing].sort((a, b) => b.min_qty - a.min_qty);
+
+  // Check if an exact or applicable tier matches
+  let bestTier: TierPricing | null = null;
+  for (const tier of sortedTiers) {
+    if (qty >= tier.min_qty) {
+      bestTier = tier;
+      break;
+    }
+  }
+
+  if (bestTier) {
+    // If exact bundle match (e.g. qty 2 on a 2-pcs tier of 10000):
+    // Or multiples: e.g. 4 pcs with 2-pcs tier => 2 * 10000 = 20000
+    const bundleSets = Math.floor(qty / bestTier.min_qty);
+    const remainder = qty % bestTier.min_qty;
+    const totalRevenue = bundleSets * bestTier.price + remainder * normalUnitPrice;
+    const normalTotalRevenue = normalUnitPrice * qty;
+    const discountSavings = Math.max(0, normalTotalRevenue - totalRevenue);
+
+    return {
+      totalRevenue,
+      totalCost,
+      totalProfit: totalRevenue - totalCost,
+      appliedTier: bestTier,
+      discountSavings,
+      effectiveUnitPrice: totalRevenue / qty,
+    };
+  }
+
+  const totalRevenue = normalUnitPrice * qty;
+  return {
+    totalRevenue,
+    totalCost,
+    totalProfit: totalRevenue - totalCost,
+    appliedTier: null,
+    discountSavings: 0,
+    effectiveUnitPrice: normalUnitPrice,
+  };
 }

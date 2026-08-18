@@ -32,22 +32,30 @@ CREATE POLICY "Users can update own profile"
   USING (auth.uid() = id);
 
 
--- 2. PRODUCTS TABLE
+-- 2. PRODUCTS TABLE (with Bundling & Tier Pricing support)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS public.products (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   description TEXT,
+  type TEXT DEFAULT 'single', -- 'single' or 'bundle'
   purchase_price NUMERIC(15,2) NOT NULL DEFAULT 0,
   selling_price NUMERIC(15,2) NOT NULL DEFAULT 0,
   stock INTEGER NOT NULL DEFAULT 0,
   total_sold INTEGER NOT NULL DEFAULT 0,
+  tier_pricing JSONB DEFAULT '[]'::jsonb, -- e.g. [{"min_qty": 2, "price": 10000}]
+  bundle_items JSONB DEFAULT '[]'::jsonb, -- e.g. [{"product_id": "...", "quantity": 1}]
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
+
+-- Auto add columns if table already exists
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS type TEXT DEFAULT 'single';
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS tier_pricing JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS bundle_items JSONB DEFAULT '[]'::jsonb;
 
 DROP POLICY IF EXISTS "Users can view own products" ON public.products;
 CREATE POLICY "Users can view own products"
@@ -70,7 +78,7 @@ CREATE POLICY "Users can delete own products"
   USING (auth.uid() = user_id);
 
 
--- 3. SALES TABLE (with historical price snapshot)
+-- 3. SALES TABLE (with historical price snapshot & bundle info)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS public.sales (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -82,10 +90,14 @@ CREATE TABLE IF NOT EXISTS public.sales (
   total_revenue NUMERIC(15,2) NOT NULL,
   total_cost NUMERIC(15,2) NOT NULL,
   total_profit NUMERIC(15,2) NOT NULL,
+  bundle_info JSONB,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
 ALTER TABLE public.sales ENABLE ROW LEVEL SECURITY;
+
+-- Auto add column if table already exists
+ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS bundle_info JSONB;
 
 DROP POLICY IF EXISTS "Users can view own sales" ON public.sales;
 CREATE POLICY "Users can view own sales"
@@ -116,23 +128,28 @@ CREATE TABLE IF NOT EXISTS public.capital_transactions (
 
 ALTER TABLE public.capital_transactions ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Users can view own capital transactions" ON public.capital_transactions;
-CREATE POLICY "Users can view own capital transactions"
+DROP POLICY IF EXISTS "Users can view own capital" ON public.capital_transactions;
+CREATE POLICY "Users can view own capital"
   ON public.capital_transactions FOR SELECT
   USING (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Users can insert own capital transactions" ON public.capital_transactions;
-CREATE POLICY "Users can insert own capital transactions"
+DROP POLICY IF EXISTS "Users can insert own capital" ON public.capital_transactions;
+CREATE POLICY "Users can insert own capital"
   ON public.capital_transactions FOR INSERT
   WITH CHECK (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Users can delete own capital transactions" ON public.capital_transactions;
-CREATE POLICY "Users can delete own capital transactions"
+DROP POLICY IF EXISTS "Users can update own capital" ON public.capital_transactions;
+CREATE POLICY "Users can update own capital"
+  ON public.capital_transactions FOR UPDATE
+  USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can delete own capital" ON public.capital_transactions;
+CREATE POLICY "Users can delete own capital"
   ON public.capital_transactions FOR DELETE
   USING (auth.uid() = user_id);
 
 
--- 5. EXPENSES TABLE
+-- 5. EXPENSES TABLE (Operational Costs)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS public.expenses (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -167,8 +184,8 @@ CREATE TABLE IF NOT EXISTS public.app_settings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID UNIQUE NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   currency TEXT DEFAULT 'IDR',
-  date_format TEXT DEFAULT 'dd/MM/yyyy',
-  theme TEXT DEFAULT 'dark' CHECK (theme IN ('dark', 'light', 'system')),
+  date_format TEXT DEFAULT 'DD/MM/YYYY',
+  theme TEXT DEFAULT 'dark',
   low_stock_threshold INTEGER DEFAULT 10,
   notifications_enabled BOOLEAN DEFAULT true,
   onboarding_completed BOOLEAN DEFAULT false,
@@ -194,7 +211,7 @@ CREATE POLICY "Users can update own settings"
   USING (auth.uid() = user_id);
 
 
--- 7. ATOMIC SALE FUNCTION (RPC)
+-- 7. ATOMIC TRANSACTION: CREATE SALE & DECREMENT STOCK
 -- =====================================================
 CREATE OR REPLACE FUNCTION public.create_sale(
   p_product_id UUID,
@@ -205,48 +222,56 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
-  v_product public.products%ROWTYPE;
-  v_sale_id UUID;
+  v_user_id UUID;
+  v_product RECORD;
   v_revenue NUMERIC(15,2);
   v_cost NUMERIC(15,2);
   v_profit NUMERIC(15,2);
-  v_user_id UUID;
+  v_sale_id UUID;
 BEGIN
-  -- Get current user
   v_user_id := auth.uid();
   IF v_user_id IS NULL THEN
     RAISE EXCEPTION 'Not authenticated';
   END IF;
 
-  -- Lock and fetch product
+  -- Lock product row for concurrency safety
   SELECT * INTO v_product
-    FROM public.products
-    WHERE id = p_product_id AND user_id = v_user_id
-    FOR UPDATE;
+  FROM public.products
+  WHERE id = p_product_id AND user_id = v_user_id
+  FOR UPDATE;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Product not found';
   END IF;
 
   IF v_product.stock < p_quantity THEN
-    RAISE EXCEPTION 'Insufficient stock: have %, need %', v_product.stock, p_quantity;
+    RAISE EXCEPTION 'Insufficient stock. Available: %', v_product.stock;
   END IF;
 
-  -- Calculate financials
+  -- Calculate financial metrics
   v_revenue := v_product.selling_price * p_quantity;
   v_cost := v_product.purchase_price * p_quantity;
   v_profit := v_revenue - v_cost;
 
-  -- Create sale record with price snapshot
+  -- Insert sale record
   INSERT INTO public.sales (
-    user_id, product_id, quantity,
-    purchase_price, selling_price,
-    total_revenue, total_cost, total_profit
-  )
-  VALUES (
-    v_user_id, p_product_id, p_quantity,
-    v_product.purchase_price, v_product.selling_price,
-    v_revenue, v_cost, v_profit
+    user_id,
+    product_id,
+    quantity,
+    purchase_price,
+    selling_price,
+    total_revenue,
+    total_cost,
+    total_profit
+  ) VALUES (
+    v_user_id,
+    p_product_id,
+    p_quantity,
+    v_product.purchase_price,
+    v_product.selling_price,
+    v_revenue,
+    v_cost,
+    v_profit
   )
   RETURNING id INTO v_sale_id;
 
@@ -299,11 +324,11 @@ BEGIN
   ON CONFLICT (user_id) DO NOTHING;
 
   -- 3. Insert Starter Default Products
-  INSERT INTO public.products (user_id, name, description, purchase_price, selling_price, stock, total_sold)
+  INSERT INTO public.products (user_id, name, description, type, purchase_price, selling_price, stock, total_sold, tier_pricing)
   VALUES
-    (NEW.id, 'Pin Bros', 'Pin bros custom design', 3000, 7000, 100, 0),
-    (NEW.id, 'Pin Tutup Botol', 'Pin tutup botol berbagai ukuran', 4000, 8000, 50, 0),
-    (NEW.id, 'Stiker', 'Stiker vinyl berkualitas tinggi', 1000, 3000, 200, 0)
+    (NEW.id, 'Pin Bros', 'Pin bros custom design', 'single', 3000, 7000, 100, 0, '[{"min_qty": 3, "price": 18000, "label": "Paket 3 pcs (Rp18.000)"}]'::jsonb),
+    (NEW.id, 'Pin Tutup Botol', 'Pin tutup botol berbagai ukuran', 'single', 4000, 8000, 50, 0, '[{"min_qty": 3, "price": 21000, "label": "Paket 3 pcs (Rp21.000)"}]'::jsonb),
+    (NEW.id, 'Stiker', 'Stiker vinyl berkualitas tinggi', 'single', 1000, 7000, 200, 0, '[{"min_qty": 2, "price": 10000, "label": "Beli 2 pcs (Rp10.000)"}, {"min_qty": 5, "price": 22000, "label": "Beli 5 pcs (Rp22.000)"}]'::jsonb)
   ON CONFLICT DO NOTHING;
 
   -- 4. Insert Initial Capital

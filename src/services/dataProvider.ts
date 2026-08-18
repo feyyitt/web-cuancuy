@@ -1,5 +1,4 @@
 import { supabase, isMissingCredentials } from "@/lib/supabase/client";
-import { DEFAULT_PRODUCTS } from "@/constants";
 import type {
   Product,
   ProductFormData,
@@ -49,18 +48,97 @@ export function seedDefaultProducts(userId = "demo-user-id"): Product[] {
   if (existing.length > 0) return existing;
 
   const now = new Date().toISOString();
-  const initialProducts: Product[] = DEFAULT_PRODUCTS.map((p, idx) => ({
-    id: `prod-default-${idx + 1}`,
-    user_id: userId,
-    name: p.name,
-    description: p.description,
-    purchase_price: p.purchase_price,
-    selling_price: p.selling_price,
-    stock: p.stock,
-    total_sold: 0,
-    created_at: now,
-    updated_at: now,
-  }));
+  const initialProducts: Product[] = [
+    {
+      id: "prod-default-1",
+      user_id: userId,
+      name: "Pin Bros",
+      description: "Pin bros custom design",
+      type: "single",
+      purchase_price: 3000,
+      selling_price: 7000,
+      stock: 100,
+      total_sold: 0,
+      tier_pricing: [
+        { min_qty: 3, price: 18000, label: "Paket 3 pcs (Rp18.000)" },
+      ],
+      bundle_items: [],
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "prod-default-2",
+      user_id: userId,
+      name: "Pin Tutup Botol",
+      description: "Pin tutup botol berbagai ukuran",
+      type: "single",
+      purchase_price: 4000,
+      selling_price: 8000,
+      stock: 50,
+      total_sold: 0,
+      tier_pricing: [
+        { min_qty: 3, price: 21000, label: "Paket 3 pcs (Rp21.000)" },
+      ],
+      bundle_items: [],
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "prod-default-3",
+      user_id: userId,
+      name: "Stiker",
+      description: "Stiker vinyl berkualitas tinggi",
+      type: "single",
+      purchase_price: 1000,
+      selling_price: 7000,
+      stock: 200,
+      total_sold: 0,
+      tier_pricing: [
+        { min_qty: 2, price: 10000, label: "Beli 2 pcs (Rp10.000)" },
+        { min_qty: 5, price: 22000, label: "Beli 5 pcs (Rp22.000)" },
+      ],
+      bundle_items: [],
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "prod-default-4",
+      user_id: userId,
+      name: "Paket Kombo Hemat (1 Pin Bros + 1 Pin Botol + 2 Stiker)",
+      description: "Paket bundling kombo lengkap hemat",
+      type: "bundle",
+      purchase_price: 9000,
+      selling_price: 18000,
+      stock: 50,
+      total_sold: 0,
+      tier_pricing: [],
+      bundle_items: [
+        {
+          product_id: "prod-default-1",
+          product_name: "Pin Bros",
+          quantity: 1,
+          purchase_price: 3000,
+          selling_price: 7000,
+        },
+        {
+          product_id: "prod-default-2",
+          product_name: "Pin Tutup Botol",
+          quantity: 1,
+          purchase_price: 4000,
+          selling_price: 8000,
+        },
+        {
+          product_id: "prod-default-3",
+          product_name: "Stiker",
+          quantity: 2,
+          purchase_price: 1000,
+          selling_price: 7000,
+        },
+      ],
+      created_at: now,
+      updated_at: now,
+    },
+  ];
 
   setLocal(STORAGE_KEYS.PRODUCTS, initialProducts);
 
@@ -287,15 +365,19 @@ export const productService = {
   async create(formData: ProductFormData): Promise<{ data: Product | null; error: string | null }> {
     if (isMissingCredentials) {
       const products = getLocal<Product[]>(STORAGE_KEYS.PRODUCTS, []);
+      const isBundle = formData.type === "bundle";
       const newProduct: Product = {
         id: `prod-${Date.now()}`,
         user_id: "demo-user-id",
         name: formData.name.trim(),
         description: formData.description?.trim() || null,
-        purchase_price: Number(formData.purchase_price),
-        selling_price: Number(formData.selling_price),
-        stock: Number(formData.stock),
+        type: formData.type || "single",
+        purchase_price: Number(formData.purchase_price) || 0,
+        selling_price: Number(formData.selling_price) || 0,
+        stock: Number(formData.stock) || 0,
         total_sold: 0,
+        tier_pricing: isBundle ? [] : (formData.tier_pricing || []),
+        bundle_items: isBundle ? (formData.bundle_items || []) : [],
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -307,15 +389,19 @@ export const productService = {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return { data: null, error: "Tidak terautentikasi" };
 
+    const isBundle = formData.type === "bundle";
     const { data, error } = await supabase
       .from("products")
       .insert({
         user_id: user.id,
         name: formData.name.trim(),
         description: formData.description?.trim() || null,
-        purchase_price: Number(formData.purchase_price),
-        selling_price: Number(formData.selling_price),
-        stock: Number(formData.stock),
+        type: formData.type || "single",
+        purchase_price: Number(formData.purchase_price) || 0,
+        selling_price: Number(formData.selling_price) || 0,
+        stock: Number(formData.stock) || 0,
+        tier_pricing: isBundle ? [] : (formData.tier_pricing || []),
+        bundle_items: isBundle ? (formData.bundle_items || []) : [],
       })
       .select()
       .single();
@@ -387,7 +473,15 @@ export const productService = {
 // ==================== SALES SERVICE ====================
 
 export const salesService = {
-  async createSale(productId: string, quantity: number): Promise<{ data: Sale | null; error: string | null }> {
+  async createSale(
+    productId: string,
+    quantity: number,
+    options?: {
+      customSellingPrice?: number;
+      customPurchasePrice?: number;
+      bundle_info?: any;
+    }
+  ): Promise<{ data: Sale | null; error: string | null }> {
     if (quantity <= 0) return { data: null, error: "Jumlah penjualan minimal 1 pcs" };
 
     if (isMissingCredentials) {
@@ -395,6 +489,71 @@ export const salesService = {
       const product = products.find((p) => p.id === productId);
 
       if (!product) return { data: null, error: "Produk tidak ditemukan" };
+
+      // Handle Bundle Combo Sale (Deduct component stocks)
+      if (product.type === "bundle" && product.bundle_items && product.bundle_items.length > 0) {
+        // 1. Check stock for each component item
+        for (const item of product.bundle_items) {
+          const component = products.find((p) => p.id === item.product_id);
+          const requiredStock = item.quantity * quantity;
+          if (!component || component.stock < requiredStock) {
+            return {
+              data: null,
+              error: `Stok komponen ${item.product_name} tidak mencukupi (Butuh ${requiredStock}, Tersedia ${component?.stock || 0})`,
+            };
+          }
+        }
+
+        // 2. Deduct component stocks
+        for (const item of product.bundle_items) {
+          const component = products.find((p) => p.id === item.product_id);
+          if (component) {
+            component.stock -= item.quantity * quantity;
+            component.total_sold = (component.total_sold || 0) + item.quantity * quantity;
+            component.updated_at = new Date().toISOString();
+          }
+        }
+
+        product.stock = Math.max(0, product.stock - quantity);
+        product.total_sold = (product.total_sold || 0) + quantity;
+        product.updated_at = new Date().toISOString();
+        setLocal(STORAGE_KEYS.PRODUCTS, products);
+
+        const revenue = options?.customSellingPrice !== undefined
+          ? options.customSellingPrice
+          : product.selling_price * quantity;
+        const cost = options?.customPurchasePrice !== undefined
+          ? options.customPurchasePrice
+          : product.purchase_price * quantity;
+        const profit = revenue - cost;
+
+        const newSale: Sale = {
+          id: `sale-${Date.now()}`,
+          user_id: "demo-user-id",
+          product_id: productId,
+          quantity,
+          purchase_price: cost / quantity,
+          selling_price: revenue / quantity,
+          total_revenue: revenue,
+          total_cost: cost,
+          total_profit: profit,
+          bundle_info: options?.bundle_info || {
+            is_bundle: true,
+            bundle_name: product.name,
+            bundle_items: product.bundle_items,
+          },
+          created_at: new Date().toISOString(),
+          product: { ...product },
+        };
+
+        const sales = getLocal<Sale[]>(STORAGE_KEYS.SALES, []);
+        sales.unshift(newSale);
+        setLocal(STORAGE_KEYS.SALES, sales);
+
+        return { data: newSale, error: null };
+      }
+
+      // Handle Single Product Sale
       if (product.stock < quantity) {
         return { data: null, error: `Stok tidak mencukupi. Sisa stok: ${product.stock} pcs` };
       }
@@ -405,9 +564,13 @@ export const salesService = {
       product.updated_at = new Date().toISOString();
       setLocal(STORAGE_KEYS.PRODUCTS, products);
 
-      // Create snapshot sale record
-      const revenue = product.selling_price * quantity;
-      const cost = product.purchase_price * quantity;
+      // Create snapshot sale record with custom bundle pricing support
+      const revenue = options?.customSellingPrice !== undefined
+        ? options.customSellingPrice
+        : product.selling_price * quantity;
+      const cost = options?.customPurchasePrice !== undefined
+        ? options.customPurchasePrice
+        : product.purchase_price * quantity;
       const profit = revenue - cost;
 
       const newSale: Sale = {
@@ -415,11 +578,12 @@ export const salesService = {
         user_id: "demo-user-id",
         product_id: productId,
         quantity,
-        purchase_price: product.purchase_price,
-        selling_price: product.selling_price,
+        purchase_price: cost / quantity,
+        selling_price: revenue / quantity,
         total_revenue: revenue,
         total_cost: cost,
         total_profit: profit,
+        bundle_info: options?.bundle_info || null,
         created_at: new Date().toISOString(),
         product: { ...product },
       };
@@ -432,18 +596,79 @@ export const salesService = {
     }
 
     try {
-      const { data, error } = await supabase.rpc("create_sale", {
-        p_product_id: productId,
-        p_quantity: quantity,
-      });
+      // In Supabase mode, if it's a custom price or bundle sale
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return { data: null, error: "Tidak terautentikasi" };
 
-      if (error) {
-        if (error.message.includes("Insufficient stock")) return { data: null, error: "Stok tidak mencukupi" };
-        if (error.message.includes("Product not found")) return { data: null, error: "Produk tidak ditemukan" };
-        return { data: null, error: error.message };
+      const { data: product, error: fetchErr } = await supabase
+        .from("products")
+        .select("*")
+        .eq("id", productId)
+        .single();
+
+      if (fetchErr || !product) return { data: null, error: "Produk tidak ditemukan" };
+
+      // Handle Bundle Combo Sale (Deduct component stocks in Supabase)
+      if (product.type === "bundle" && product.bundle_items && product.bundle_items.length > 0) {
+        for (const item of product.bundle_items) {
+          const { data: comp } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
+          const req = item.quantity * quantity;
+          if (!comp || comp.stock < req) {
+            return { data: null, error: `Stok ${item.product_name} tidak cukup.` };
+          }
+        }
+
+        for (const item of product.bundle_items) {
+          const { data: comp } = await supabase.from("products").select("stock, total_sold").eq("id", item.product_id).single();
+          if (comp) {
+            await supabase
+              .from("products")
+              .update({
+                stock: comp.stock - item.quantity * quantity,
+                total_sold: (comp.total_sold || 0) + item.quantity * quantity,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", item.product_id);
+          }
+        }
+      } else {
+        if (product.stock < quantity) return { data: null, error: "Stok tidak mencukupi" };
+        await supabase
+          .from("products")
+          .update({
+            stock: product.stock - quantity,
+            total_sold: (product.total_sold || 0) + quantity,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", productId);
       }
 
-      return { data: data as Sale, error: null };
+      const revenue = options?.customSellingPrice !== undefined
+        ? options.customSellingPrice
+        : Number(product.selling_price) * quantity;
+      const cost = options?.customPurchasePrice !== undefined
+        ? options.customPurchasePrice
+        : Number(product.purchase_price) * quantity;
+      const profit = revenue - cost;
+
+      const { data: saleData, error: saleErr } = await supabase
+        .from("sales")
+        .insert({
+          user_id: user.id,
+          product_id: productId,
+          quantity,
+          purchase_price: cost / quantity,
+          selling_price: revenue / quantity,
+          total_revenue: revenue,
+          total_cost: cost,
+          total_profit: profit,
+          bundle_info: options?.bundle_info || null,
+        })
+        .select("*, product:products(*)")
+        .single();
+
+      if (saleErr) return { data: null, error: saleErr.message };
+      return { data: saleData as Sale, error: null };
     } catch (e: unknown) {
       const err = e as Error;
       return { data: null, error: err?.message || "Gagal mencatat penjualan" };

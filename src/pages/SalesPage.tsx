@@ -4,7 +4,8 @@ import { salesService, productService } from "@/services/dataProvider";
 import { useSalesStore } from "@/stores/salesStore";
 import { useProductStore } from "@/stores/productStore";
 import { formatCurrency, formatNumber } from "@/utils/currency";
-import type { Sale } from "@/types";
+import { getEffectivePricingForQuantity } from "@/utils/calculations";
+import type { Sale, Product } from "@/types";
 import {
   ShoppingCart,
   Plus,
@@ -16,12 +17,14 @@ import {
   X,
   ArrowRight,
   Package,
+  Tag,
+  Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
 
 export function SalesPage() {
   const { sales, setSales, addSale, removeSale, isLoading, setLoading } = useSalesStore();
-  const { products, setProducts, updateProduct } = useProductStore();
+  const { products, setProducts } = useProductStore();
 
   const [search, setSearch] = useState("");
   const [isRecordModalOpen, setIsRecordModalOpen] = useState(false);
@@ -46,7 +49,7 @@ export function SalesPage() {
     loadData();
   }, []);
 
-  const selectedProduct = useMemo(() => {
+  const selectedProduct: Product | null = useMemo(() => {
     return products.find((p) => p.id === selectedProductId) || null;
   }, [products, selectedProductId]);
 
@@ -55,17 +58,51 @@ export function SalesPage() {
       ? products.find((p) => p.id === preselectedProdId && p.stock > 0)
       : products.find((p) => p.stock > 0);
 
-    setSelectedProductId(defaultProd?.id || products[0]?.id || "");
+    const targetId = defaultProd?.id || products[0]?.id || "";
+    setSelectedProductId(targetId);
     setQuantity(1);
     setShowConfirmation(false);
     setSuccessAnimation(false);
     setIsRecordModalOpen(true);
   };
 
-  // Calculations for current selected sale
-  const totalRevenue = (selectedProduct?.selling_price || 0) * quantity;
-  const totalCost = (selectedProduct?.purchase_price || 0) * quantity;
-  const totalProfit = totalRevenue - totalCost;
+  // Pricing calculations (with Tier and Combo Bundling support)
+  const isBundle = selectedProduct?.type === "bundle";
+
+  const effectivePricing = useMemo(() => {
+    if (!selectedProduct) {
+      return {
+        totalRevenue: 0,
+        totalCost: 0,
+        totalProfit: 0,
+        appliedTier: null,
+        discountSavings: 0,
+        effectiveUnitPrice: 0,
+      };
+    }
+
+    if (isBundle) {
+      const totalRevenue = (selectedProduct.selling_price || 0) * quantity;
+      const totalCost = (selectedProduct.purchase_price || 0) * quantity;
+      return {
+        totalRevenue,
+        totalCost,
+        totalProfit: totalRevenue - totalCost,
+        appliedTier: null,
+        discountSavings: 0,
+        effectiveUnitPrice: selectedProduct.selling_price || 0,
+      };
+    }
+
+    return getEffectivePricingForQuantity(selectedProduct, quantity);
+  }, [selectedProduct, quantity, isBundle]);
+
+  const totalRevenue = effectivePricing.totalRevenue;
+  const totalCost = effectivePricing.totalCost;
+  const totalProfit = effectivePricing.totalProfit;
+  const appliedTier = effectivePricing.appliedTier;
+  const discountSavings = effectivePricing.discountSavings;
+
   const remainingStock = (selectedProduct?.stock || 0) - quantity;
   const isStockInsufficient = selectedProduct ? quantity > selectedProduct.stock : false;
 
@@ -75,16 +112,23 @@ export function SalesPage() {
       return;
     }
 
-    const res = await salesService.createSale(selectedProduct.id, quantity);
+    const res = await salesService.createSale(selectedProduct.id, quantity, {
+      customSellingPrice: totalRevenue,
+      customPurchasePrice: totalCost,
+      bundle_info: isBundle
+        ? { is_bundle: true, bundle_name: selectedProduct.name, bundle_items: selectedProduct.bundle_items }
+        : appliedTier
+        ? { is_bundle: false, tier_applied: appliedTier }
+        : null,
+    });
+
     if (res.error) {
       toast.error(res.error);
     } else if (res.data) {
       addSale(res.data);
-      updateProduct({
-        ...selectedProduct,
-        stock: selectedProduct.stock - quantity,
-        total_sold: (selectedProduct.total_sold || 0) + quantity,
-      });
+      // Reload fresh products to update stock across bundle components
+      const freshProducts = await productService.getAll();
+      setProducts(freshProducts);
 
       setSuccessAnimation(true);
       toast.success("✓ Transaksi penjualan berhasil dicatat!");
@@ -133,9 +177,9 @@ export function SalesPage() {
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-text-primary">Penjualan</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-text-primary">Penjualan & Kasir</h1>
           <p className="mt-1 text-sm text-text-secondary">
-            Catat penjualan per pcs, otomatis potong stok, dan hitung keuntungan secara akurat.
+            Catat penjualan satuan maupun paket bundling, otomatis potong stok komponen, dan hitung laba bersih.
           </p>
         </div>
         <button
@@ -144,7 +188,7 @@ export function SalesPage() {
           className="flex items-center gap-2 rounded-xl bg-emerald px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-hover active:scale-[0.98] transition-all shadow-md shadow-emerald/20 disabled:opacity-50 cursor-pointer"
         >
           <Plus className="h-4 w-4" />
-          <span>Catat Penjualan</span>
+          <span>+ Catat Penjualan</span>
         </button>
       </div>
 
@@ -176,9 +220,9 @@ export function SalesPage() {
 
         <div className="rounded-2xl border border-border bg-card p-4 flex items-center justify-between">
           <div>
-            <span className="text-xs font-medium text-text-muted uppercase">Produk Terjual</span>
+            <span className="text-xs font-medium text-text-muted uppercase">Produk & Paket Terjual</span>
             <p className="mt-1 text-xl font-bold tabular-nums text-amber">
-              {formatNumber(overallSummary.total_items)} pcs
+              {formatNumber(overallSummary.total_items)} pcs/paket
             </p>
           </div>
           <div className="rounded-xl bg-amber/10 p-2.5 text-amber">
@@ -191,28 +235,40 @@ export function SalesPage() {
       {products.length > 0 && (
         <div>
           <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2.5">
-            Pilihan Produk Cepat
+            Pilihan Cepat Catat Penjualan
           </h3>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {products.slice(0, 3).map((p) => (
-              <div
-                key={p.id}
-                onClick={() => handleOpenRecord(p.id)}
-                className="flex items-center justify-between p-3.5 rounded-xl border border-border bg-card hover:border-emerald/40 hover:bg-elevated/40 transition-all cursor-pointer group"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-text-primary group-hover:text-emerald transition-colors truncate">
-                    {p.name}
-                  </p>
-                  <p className="text-xs text-text-muted">
-                    Jual: {formatCurrency(p.selling_price)} • Stok: {p.stock} pcs
-                  </p>
+            {products.slice(0, 3).map((p) => {
+              const isCombo = p.type === "bundle";
+              return (
+                <div
+                  key={p.id}
+                  onClick={() => handleOpenRecord(p.id)}
+                  className={`flex items-center justify-between p-3.5 rounded-xl border bg-card hover:bg-elevated/40 transition-all cursor-pointer group ${
+                    isCombo ? "border-emerald/40 hover:border-emerald" : "border-border hover:border-emerald/40"
+                  }`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm font-semibold text-text-primary group-hover:text-emerald transition-colors truncate">
+                        {p.name}
+                      </p>
+                      {isCombo && (
+                        <span className="rounded bg-emerald/10 px-1.5 py-0.2 text-[9px] font-bold text-emerald border border-emerald/20 uppercase">
+                          Paket
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-text-muted mt-0.5">
+                      Harga: {formatCurrency(p.selling_price)} • Stok: {p.stock} {isCombo ? "paket" : "pcs"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-emerald/10 p-2 text-emerald group-hover:bg-emerald group-hover:text-white transition-colors shrink-0 ml-2">
+                    <Plus className="h-4 w-4" />
+                  </div>
                 </div>
-                <div className="rounded-lg bg-emerald/10 p-2 text-emerald group-hover:bg-emerald group-hover:text-white transition-colors shrink-0 ml-2">
-                  <Plus className="h-4 w-4" />
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -259,52 +315,68 @@ export function SalesPage() {
               <thead className="border-b border-border bg-elevated/40 text-xs font-semibold text-text-muted uppercase">
                 <tr>
                   <th className="px-4 py-3">Tanggal & Waktu</th>
-                  <th className="px-4 py-3">Produk</th>
+                  <th className="px-4 py-3">Produk / Paket</th>
                   <th className="px-4 py-3 text-center">Qty</th>
-                  <th className="px-4 py-3 text-right">Harga Jual / pcs</th>
+                  <th className="px-4 py-3 text-right">Rata-Rata / pcs</th>
                   <th className="px-4 py-3 text-right">Total Penjualan</th>
                   <th className="px-4 py-3 text-right">Keuntungan</th>
                   <th className="px-4 py-3 text-center">Aksi</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
-                {filteredSales.map((s) => (
-                  <tr key={s.id} className="hover:bg-elevated/30 transition-colors">
-                    <td className="px-4 py-3.5 whitespace-nowrap text-xs text-text-muted">
-                      {new Date(s.created_at).toLocaleDateString("id-ID", {
-                        day: "numeric",
-                        month: "short",
-                        year: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </td>
-                    <td className="px-4 py-3.5 font-medium text-text-primary">
-                      {s.product?.name || "Produk dihapus"}
-                    </td>
-                    <td className="px-4 py-3.5 text-center font-bold tabular-nums text-text-primary">
-                      {s.quantity} pcs
-                    </td>
-                    <td className="px-4 py-3.5 text-right tabular-nums text-text-secondary text-xs">
-                      {formatCurrency(s.selling_price)}
-                    </td>
-                    <td className="px-4 py-3.5 text-right font-semibold tabular-nums text-text-primary">
-                      {formatCurrency(s.total_revenue)}
-                    </td>
-                    <td className="px-4 py-3.5 text-right font-bold tabular-nums text-emerald">
-                      +{formatCurrency(s.total_profit)}
-                    </td>
-                    <td className="px-4 py-3.5 text-center">
-                      <button
-                        onClick={() => setDeletingSale(s)}
-                        title="Hapus Transaksi"
-                        className="rounded-lg p-1.5 text-text-muted hover:bg-error/10 hover:text-error transition-colors cursor-pointer"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {filteredSales.map((s) => {
+                  const isBundleSale = s.bundle_info?.is_bundle || s.product?.type === "bundle";
+                  const hasTierApplied = s.bundle_info?.tier_applied;
+
+                  return (
+                    <tr key={s.id} className="hover:bg-elevated/30 transition-colors">
+                      <td className="px-4 py-3.5 whitespace-nowrap text-xs text-text-muted">
+                        {new Date(s.created_at).toLocaleDateString("id-ID", {
+                          day: "numeric",
+                          month: "short",
+                          year: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </td>
+                      <td className="px-4 py-3.5 font-medium text-text-primary">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span>{s.product?.name || "Produk dihapus"}</span>
+                          {isBundleSale ? (
+                            <span className="rounded bg-emerald/10 px-1.5 py-0.2 text-[10px] font-bold text-emerald border border-emerald/20 uppercase">
+                              Paket Kombo
+                            </span>
+                          ) : hasTierApplied ? (
+                            <span className="rounded bg-amber/10 px-1.5 py-0.2 text-[10px] font-bold text-amber border border-amber/20 uppercase">
+                              Promo Bundling
+                            </span>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3.5 text-center font-bold tabular-nums text-text-primary">
+                        {s.quantity} {isBundleSale ? "paket" : "pcs"}
+                      </td>
+                      <td className="px-4 py-3.5 text-right tabular-nums text-text-secondary text-xs">
+                        {formatCurrency(s.selling_price)}
+                      </td>
+                      <td className="px-4 py-3.5 text-right font-semibold tabular-nums text-text-primary">
+                        {formatCurrency(s.total_revenue)}
+                      </td>
+                      <td className="px-4 py-3.5 text-right font-bold tabular-nums text-emerald">
+                        +{formatCurrency(s.total_profit)}
+                      </td>
+                      <td className="px-4 py-3.5 text-center">
+                        <button
+                          onClick={() => setDeletingSale(s)}
+                          title="Hapus Transaksi"
+                          className="rounded-lg p-1.5 text-text-muted hover:bg-error/10 hover:text-error transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -328,7 +400,7 @@ export function SalesPage() {
               initial={{ opacity: 0, scale: 0.95, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              className="relative z-10 w-full max-w-md rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-2xl overflow-y-auto max-h-[90vh]"
+              className="relative z-10 w-full max-w-lg rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-2xl overflow-y-auto max-h-[90vh]"
             >
               {successAnimation ? (
                 /* Animated Success State */
@@ -342,7 +414,8 @@ export function SalesPage() {
                   </div>
                   <h3 className="text-xl font-bold text-text-primary">Penjualan Berhasil!</h3>
                   <p className="mt-1 text-sm text-text-secondary">
-                    {quantity} pcs {selectedProduct?.name} tercatat (+{formatCurrency(totalProfit)} untung)
+                    {quantity} {isBundle ? "paket" : "pcs"} {selectedProduct?.name} tercatat (+
+                    {formatCurrency(totalProfit)} keuntungan bersih)
                   </p>
                 </motion.div>
               ) : !showConfirmation ? (
@@ -365,16 +438,21 @@ export function SalesPage() {
                     {/* Select Product */}
                     <div>
                       <label className="block text-xs font-semibold text-text-secondary uppercase mb-1.5">
-                        Pilih Produk
+                        Pilih Produk / Paket Bundling
                       </label>
                       <select
                         value={selectedProductId}
-                        onChange={(e) => setSelectedProductId(e.target.value)}
+                        onChange={(e) => {
+                          setSelectedProductId(e.target.value);
+                          setQuantity(1);
+                        }}
                         className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm text-text-primary focus:border-emerald focus:outline-none cursor-pointer"
                       >
                         {products.map((p) => (
                           <option key={p.id} value={p.id} disabled={p.stock <= 0}>
-                            {p.name} — Jual: {formatCurrency(p.selling_price)} (Stok: {p.stock} pcs)
+                            {p.type === "bundle" ? "📦 [PAKET KOMBO] " : ""}
+                            {p.name} — Harga: {formatCurrency(p.selling_price)} (Stok: {p.stock}{" "}
+                            {p.type === "bundle" ? "paket" : "pcs"})
                           </option>
                         ))}
                       </select>
@@ -382,11 +460,32 @@ export function SalesPage() {
 
                     {selectedProduct && (
                       <>
+                        {/* Bundle Details breakdown */}
+                        {isBundle && selectedProduct.bundle_items && (
+                          <div className="rounded-xl bg-emerald/5 border border-emerald/20 p-3 text-xs space-y-1.5">
+                            <span className="font-bold text-emerald uppercase tracking-wider block">
+                              📦 Komponen yang akan dipotong dari stok:
+                            </span>
+                            {selectedProduct.bundle_items.map((it, idx) => (
+                              <div key={idx} className="flex justify-between text-text-secondary">
+                                <span>• {it.quantity * quantity}x {it.product_name}</span>
+                                <span className="text-text-muted">({it.quantity} pcs per paket)</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
                         {/* Quantity Stepper */}
                         <div>
-                          <label className="block text-xs font-semibold text-text-secondary uppercase mb-1.5">
-                            Jumlah Terjual (pcs)
-                          </label>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-xs font-semibold text-text-secondary uppercase">
+                              Jumlah Terjual ({isBundle ? "paket" : "pcs"})
+                            </label>
+                            <span className="text-xs text-text-muted">
+                              Tersedia: <strong>{selectedProduct.stock}</strong> {isBundle ? "paket" : "pcs"}
+                            </span>
+                          </div>
+
                           <div className="flex items-center gap-3">
                             <button
                               type="button"
@@ -412,160 +511,203 @@ export function SalesPage() {
                             />
                             <button
                               type="button"
-                              onClick={() =>
-                                setQuantity((q) => Math.min(selectedProduct.stock, q + 1))
-                              }
+                              onClick={() => setQuantity((q) => Math.min(selectedProduct.stock, q + 1))}
                               disabled={quantity >= selectedProduct.stock}
                               className="rounded-xl border border-border bg-elevated h-10 w-10 flex items-center justify-center text-base font-bold text-text-primary hover:bg-elevated/80 disabled:opacity-40 cursor-pointer"
                             >
                               +
                             </button>
                           </div>
-                          {/* Quick preset buttons */}
-                          <div className="flex gap-2 mt-2">
-                            {[1, 2, 5, 10, 20].map((qty) => (
+
+                          {/* Quick Preset Buttons (Include Bundling Tiers if any) */}
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            <button
+                              type="button"
+                              onClick={() => setQuantity(1)}
+                              className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
+                                quantity === 1
+                                  ? "bg-emerald text-white border-emerald"
+                                  : "border-border bg-elevated/60 text-text-secondary hover:text-emerald"
+                              }`}
+                            >
+                              1 {isBundle ? "paket" : "pcs"}
+                            </button>
+
+                            {/* Show defined Tier Pricing Buttons for single product */}
+                            {!isBundle &&
+                              selectedProduct.tier_pricing?.map((tier, idx) => (
+                                <button
+                                  key={idx}
+                                  type="button"
+                                  disabled={tier.min_qty > selectedProduct.stock}
+                                  onClick={() => setQuantity(tier.min_qty)}
+                                  className={`rounded-lg border px-2.5 py-1 text-xs font-semibold transition-colors cursor-pointer flex items-center gap-1 ${
+                                    quantity === tier.min_qty
+                                      ? "bg-emerald text-white border-emerald"
+                                      : "border-amber/30 bg-amber/10 text-amber hover:bg-amber/20"
+                                  } disabled:opacity-30`}
+                                >
+                                  <Tag className="h-3 w-3" />
+                                  Beli {tier.min_qty} pcs ({formatCurrency(tier.price)})
+                                </button>
+                              ))}
+
+                            {[5, 10, 20].map((qty) => (
                               <button
                                 key={qty}
                                 type="button"
                                 disabled={qty > selectedProduct.stock}
                                 onClick={() => setQuantity(qty)}
-                                className={`flex-1 rounded-lg border border-border py-1 text-xs font-medium transition-colors cursor-pointer ${
+                                className={`rounded-lg border border-border py-1 px-2.5 text-xs font-medium transition-colors cursor-pointer ${
                                   quantity === qty
                                     ? "bg-emerald text-white border-emerald"
                                     : "bg-elevated/60 text-text-secondary hover:bg-emerald/10 hover:text-emerald"
                                 } disabled:opacity-30`}
                               >
-                                {qty} pcs
+                                {qty} {isBundle ? "paket" : "pcs"}
                               </button>
                             ))}
                           </div>
                         </div>
 
+                        {/* Bundling Promotion Banner if Applied */}
+                        {appliedTier && (
+                          <div className="rounded-xl bg-amber/10 border border-amber/30 p-3 text-xs flex items-center gap-2 text-amber">
+                            <Sparkles className="h-4 w-4 shrink-0" />
+                            <div>
+                              <strong className="font-bold">Promo Bundling Aktif:</strong> Beli {appliedTier.min_qty} pcs seharga{" "}
+                              <strong>{formatCurrency(appliedTier.price)}</strong> (Hemat{" "}
+                              <strong>{formatCurrency(discountSavings)}</strong>)
+                            </div>
+                          </div>
+                        )}
+
                         {/* Financial calculation breakdown card */}
                         <div className="rounded-xl bg-elevated/60 border border-border p-4 space-y-2 text-xs">
                           <div className="flex justify-between text-text-secondary">
-                            <span>Harga Jual / pcs:</span>
+                            <span>Harga Satuan / Normal:</span>
                             <span className="font-semibold text-text-primary tabular-nums">
                               {formatCurrency(selectedProduct.selling_price)}
                             </span>
                           </div>
+
                           <div className="flex justify-between text-text-secondary">
-                            <span>Harga Beli / pcs (Modal):</span>
-                            <span className="text-text-muted tabular-nums">
-                              {formatCurrency(selectedProduct.purchase_price)}
-                            </span>
-                          </div>
-                          <div className="flex justify-between text-text-secondary">
-                            <span>Total Modal Barang:</span>
-                            <span className="text-text-muted tabular-nums">{formatCurrency(totalCost)}</span>
-                          </div>
-                          <hr className="border-border my-1" />
-                          <div className="flex justify-between text-sm">
-                            <span className="font-semibold text-text-primary">Total Penjualan:</span>
-                            <strong className="text-base font-bold text-text-primary tabular-nums">
+                            <span>Total Omset ({quantity} {isBundle ? "paket" : "pcs"}):</span>
+                            <strong className="text-sm font-bold text-text-primary tabular-nums">
                               {formatCurrency(totalRevenue)}
                             </strong>
                           </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="font-semibold text-emerald">Keuntungan Bersih:</span>
+
+                          <div className="flex justify-between text-text-secondary">
+                            <span>Total Modal Pokok (HPP):</span>
+                            <span className="tabular-nums text-text-muted">
+                              -{formatCurrency(totalCost)}
+                            </span>
+                          </div>
+
+                          <div className="border-t border-border pt-2 flex justify-between items-center">
+                            <span className="font-bold text-text-primary">Keuntungan Bersih:</span>
                             <strong className="text-base font-bold text-emerald tabular-nums">
                               +{formatCurrency(totalProfit)}
                             </strong>
                           </div>
-                          <div className="pt-1 flex justify-between text-[11px] text-text-muted">
-                            <span>Sisa stok setelah transaksi:</span>
-                            <span className={`font-semibold ${remainingStock <= 5 ? "text-amber" : "text-emerald"}`}>
-                              {remainingStock} pcs
-                            </span>
-                          </div>
                         </div>
+
+                        {/* Stock warning if exceeding */}
+                        {isStockInsufficient && (
+                          <div className="flex items-center gap-2 rounded-xl bg-error/10 border border-error/20 p-3 text-xs text-error">
+                            <AlertCircle className="h-4 w-4 shrink-0" />
+                            <span>Jumlah penjualan melebihi stok yang tersedia ({selectedProduct.stock} pcs).</span>
+                          </div>
+                        )}
                       </>
                     )}
 
-                    {isStockInsufficient && (
-                      <div className="flex items-center gap-2 rounded-xl bg-error/10 border border-error/20 p-3 text-xs text-error">
-                        <AlertCircle className="h-4 w-4 shrink-0" />
-                        <span>Stok tidak mencukupi. Sisa stok hanya {selectedProduct?.stock} pcs.</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Modal buttons */}
-                  <div className="mt-5 flex justify-end gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setIsRecordModalOpen(false)}
-                      className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-elevated cursor-pointer"
-                    >
-                      Batal
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!selectedProduct || quantity <= 0 || isStockInsufficient}
-                      onClick={() => setShowConfirmation(true)}
-                      className="flex items-center gap-2 rounded-xl bg-emerald px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-hover disabled:opacity-50 shadow-md shadow-emerald/20 transition-all cursor-pointer"
-                    >
-                      <span>Lanjut Konfirmasi</span>
-                      <ArrowRight className="h-4 w-4" />
-                    </button>
+                    <div className="flex justify-end gap-3 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsRecordModalOpen(false)}
+                        className="rounded-xl border border-border px-4 py-2 text-sm font-medium text-text-secondary hover:bg-elevated cursor-pointer"
+                      >
+                        Batal
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmation(true)}
+                        disabled={!selectedProduct || quantity <= 0 || isStockInsufficient}
+                        className="flex items-center gap-2 rounded-xl bg-emerald px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-hover active:scale-[0.98] transition-all shadow-md shadow-emerald/20 disabled:opacity-40 cursor-pointer"
+                      >
+                        <span>Lanjut Konfirmasi</span>
+                        <ArrowRight className="h-4 w-4" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               ) : (
-                /* Step 2: Confirmation Step */
+                /* Step 2: Confirmation Screen */
                 <div>
                   <div className="flex items-center justify-between border-b border-border pb-3.5">
-                    <h3 className="text-base font-bold text-text-primary">Konfirmasi Penjualan</h3>
+                    <h3 className="text-base font-bold text-text-primary">Konfirmasi Transaksi</h3>
                     <button
                       onClick={() => setShowConfirmation(false)}
-                      className="rounded-lg p-1 text-text-muted hover:bg-elevated cursor-pointer"
+                      className="rounded-lg p-1 text-text-muted hover:bg-elevated hover:text-text-primary cursor-pointer"
                     >
                       <X className="h-5 w-5" />
                     </button>
                   </div>
 
-                  <div className="mt-4 rounded-xl border border-emerald/30 bg-emerald/5 p-4 space-y-2.5 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-text-muted">Produk:</span>
-                      <strong className="text-text-primary">{selectedProduct?.name}</strong>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-text-muted">Jumlah:</span>
-                      <strong className="text-text-primary">{quantity} pcs</strong>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-text-muted">Total Penjualan:</span>
-                      <strong className="text-base text-text-primary tabular-nums">
-                        {formatCurrency(totalRevenue)}
-                      </strong>
-                    </div>
-                    <hr className="border-border/60" />
-                    <div className="flex justify-between">
-                      <span className="text-text-muted">Keuntungan:</span>
-                      <strong className="text-base text-emerald tabular-nums">
-                        +{formatCurrency(totalProfit)}
-                      </strong>
-                    </div>
-                  </div>
+                  <div className="mt-4 space-y-4 text-sm">
+                    <p className="text-text-secondary text-xs">
+                      Pastikan detail transaksi penjualan di bawah ini sudah benar:
+                    </p>
 
-                  <p className="mt-3 text-xs text-text-muted text-center">
-                    Stok akan langsung dipotong dari {selectedProduct?.stock} pcs menjadi {remainingStock} pcs.
-                  </p>
+                    <div className="rounded-xl bg-elevated p-4 space-y-2.5 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-text-muted">Nama Barang / Paket:</span>
+                        <strong className="text-text-primary">{selectedProduct?.name}</strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-text-muted">Jumlah Terjual:</span>
+                        <strong className="text-text-primary">
+                          {quantity} {isBundle ? "paket" : "pcs"}
+                        </strong>
+                      </div>
+                      {appliedTier && (
+                        <div className="flex justify-between text-amber">
+                          <span>Promo Bundling:</span>
+                          <strong>{appliedTier.label || `Beli ${appliedTier.min_qty} pcs`}</strong>
+                        </div>
+                      )}
+                      <div className="flex justify-between">
+                        <span className="text-text-muted">Total Diterima (Omset):</span>
+                        <strong className="text-text-primary font-bold">{formatCurrency(totalRevenue)}</strong>
+                      </div>
+                      <div className="flex justify-between border-t border-border/80 pt-2">
+                        <span className="text-text-muted">Keuntungan Bersih:</span>
+                        <strong className="text-emerald font-bold">+{formatCurrency(totalProfit)}</strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-text-muted">Sisa Stok Nanti:</span>
+                        <span className="font-semibold text-text-primary">{remainingStock} pcs</span>
+                      </div>
+                    </div>
 
-                  <div className="mt-5 flex gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setShowConfirmation(false)}
-                      className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-elevated cursor-pointer"
-                    >
-                      Kembali
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleConfirmSale}
-                      className="flex-1 rounded-xl bg-emerald px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-hover shadow-md shadow-emerald/20 transition-all cursor-pointer"
-                    >
-                      Konfirmasi Penjualan
-                    </button>
+                    <div className="flex justify-end gap-3 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmation(false)}
+                        className="rounded-xl border border-border px-4 py-2 text-sm font-medium text-text-secondary hover:bg-elevated cursor-pointer"
+                      >
+                        Kembali
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleConfirmSale}
+                        className="rounded-xl bg-emerald px-6 py-2 text-sm font-semibold text-white hover:bg-emerald-hover active:scale-[0.98] transition-all shadow-md shadow-emerald/20 cursor-pointer"
+                      >
+                        ✓ Simpan Transaksi
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -574,7 +716,7 @@ export function SalesPage() {
         )}
       </AnimatePresence>
 
-      {/* DELETE TRANSACTION MODAL */}
+      {/* DELETE CONFIRMATION MODAL */}
       <AnimatePresence>
         {deletingSale && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -591,28 +733,20 @@ export function SalesPage() {
               exit={{ opacity: 0, scale: 0.95 }}
               className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-2xl"
             >
-              <div className="flex items-center gap-3 text-error">
-                <div className="rounded-xl bg-error/10 p-2.5">
-                  <AlertCircle className="h-6 w-6" />
-                </div>
-                <h3 className="text-lg font-bold text-text-primary">Hapus Transaksi?</h3>
-              </div>
-              <p className="mt-3 text-sm text-text-secondary">
-                Hapus riwayat penjualan {deletingSale.quantity} pcs "{deletingSale.product?.name}" (
-                {formatCurrency(deletingSale.total_revenue)})?
+              <h3 className="text-lg font-bold text-text-primary">Hapus Transaksi?</h3>
+              <p className="mt-2 text-sm text-text-secondary">
+                Apakah Anda yakin ingin menghapus catatan transaksi penjualan ini?
               </p>
               <div className="mt-6 flex justify-end gap-3">
                 <button
-                  type="button"
                   onClick={() => setDeletingSale(null)}
-                  className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-elevated cursor-pointer"
+                  className="rounded-xl border border-border px-4 py-2 text-sm font-medium text-text-secondary hover:bg-elevated cursor-pointer"
                 >
                   Batal
                 </button>
                 <button
-                  type="button"
                   onClick={handleDeleteSale}
-                  className="rounded-xl bg-error px-5 py-2.5 text-sm font-semibold text-white hover:bg-error-hover cursor-pointer"
+                  className="rounded-xl bg-error px-5 py-2 text-sm font-semibold text-white hover:bg-error-hover cursor-pointer"
                 >
                   Hapus
                 </button>

@@ -9,15 +9,32 @@ export interface Profile {
   updated_at: string;
 }
 
+export interface TierPricing {
+  min_qty: number;
+  price: number;
+  label?: string;
+}
+
+export interface BundleItem {
+  product_id: string;
+  product_name: string;
+  quantity: number;
+  purchase_price: number;
+  selling_price: number;
+}
+
 export interface Product {
   id: string;
   user_id: string;
   name: string;
   description: string | null;
+  type?: "single" | "bundle";
   purchase_price: number;
   selling_price: number;
   stock: number;
   total_sold: number;
+  tier_pricing?: TierPricing[];
+  bundle_items?: BundleItem[];
   created_at: string;
   updated_at: string;
 }
@@ -32,6 +49,12 @@ export interface Sale {
   total_revenue: number;
   total_cost: number;
   total_profit: number;
+  bundle_info?: {
+    is_bundle?: boolean;
+    bundle_name?: string;
+    bundle_items?: BundleItem[];
+    tier_applied?: TierPricing;
+  } | null;
   created_at: string;
   // Joined data
   product?: Product;
@@ -85,14 +108,25 @@ export interface RegisterFormData {
 export interface ProductFormData {
   name: string;
   description?: string;
+  type?: "single" | "bundle";
   purchase_price: number;
   selling_price: number;
   stock: number;
+  tier_pricing?: TierPricing[];
+  bundle_items?: BundleItem[];
 }
 
 export interface SaleFormData {
   product_id: string;
   quantity: number;
+  custom_selling_price?: number;
+  custom_purchase_price?: number;
+  bundle_info?: {
+    is_bundle?: boolean;
+    bundle_name?: string;
+    bundle_items?: BundleItem[];
+    tier_applied?: TierPricing;
+  };
 }
 
 export interface CapitalFormData {
@@ -146,6 +180,18 @@ export interface PriceScenario {
   selling_price: number;
   profit_per_piece: number;
   total_profit: number;
+  margin: number;
+}
+
+export interface BundleScenario {
+  name: string;
+  items: { name: string; quantity: number; purchase_price: number; regular_price: number }[];
+  bundle_price: number;
+  total_cost: number;
+  normal_total_revenue: number;
+  bundle_profit: number;
+  discount_amount: number;
+  discount_percent: number;
   margin: number;
 }
 

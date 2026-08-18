@@ -3,8 +3,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { productService, seedDefaultProducts } from "@/services/dataProvider";
 import { useProductStore } from "@/stores/productStore";
 import { formatCurrency, formatNumber } from "@/utils/currency";
-import { calculateProfitPerPiece, calculateMargin, formatMargin } from "@/utils/calculations";
-import type { Product, ProductFormData } from "@/types";
+import { calculateProfitPerPiece, calculateMargin, formatMargin, calculateBundleMetrics } from "@/utils/calculations";
+import type { Product, ProductFormData, TierPricing, BundleItem } from "@/types";
 import {
   Package,
   Plus,
@@ -15,6 +15,9 @@ import {
   AlertTriangle,
   CheckCircle2,
   X,
+  Layers,
+  Tag,
+  Boxes,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -24,7 +27,7 @@ export function ProductsPage() {
 
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<"name" | "profit" | "margin" | "stock" | "sold">("name");
-  const [stockFilter, setStockFilter] = useState<"all" | "low" | "in_stock">("all");
+  const [stockFilter, setStockFilter] = useState<"all" | "single" | "bundle" | "low" | "in_stock">("all");
 
   // Modal states
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -37,10 +40,17 @@ export function ProductsPage() {
   const [formData, setFormData] = useState<ProductFormData>({
     name: "",
     description: "",
+    type: "single",
     purchase_price: 3000,
     selling_price: 7000,
     stock: 50,
+    tier_pricing: [],
+    bundle_items: [],
   });
+
+  // Helper state for adding items to combo bundle
+  const [selectedBundleProdId, setSelectedBundleProdId] = useState<string>("");
+  const [bundleItemQty, setBundleItemQty] = useState<number>(1);
 
   const loadProducts = async () => {
     setLoading(true);
@@ -65,14 +75,24 @@ export function ProductsPage() {
     loadProducts();
   }, []);
 
-  const handleOpenAdd = () => {
+  // Filter available single products for bundle picker
+  const singleProducts = useMemo(() => {
+    return products.filter((p) => p.type !== "bundle");
+  }, [products]);
+
+  const handleOpenAdd = (defaultType: "single" | "bundle" = "single") => {
     setFormData({
       name: "",
       description: "",
-      purchase_price: 3000,
-      selling_price: 7000,
+      type: defaultType,
+      purchase_price: defaultType === "single" ? 3000 : 0,
+      selling_price: defaultType === "single" ? 7000 : 0,
       stock: 50,
+      tier_pricing: defaultType === "single" ? [{ min_qty: 2, price: 10000, label: "Paket 2 pcs" }] : [],
+      bundle_items: [],
     });
+    setSelectedBundleProdId(singleProducts[0]?.id || "");
+    setBundleItemQty(1);
     setIsAddModalOpen(true);
   };
 
@@ -81,16 +101,108 @@ export function ProductsPage() {
     setFormData({
       name: p.name,
       description: p.description || "",
+      type: p.type || "single",
       purchase_price: p.purchase_price,
       selling_price: p.selling_price,
       stock: p.stock,
+      tier_pricing: p.tier_pricing ? [...p.tier_pricing] : [],
+      bundle_items: p.bundle_items ? [...p.bundle_items] : [],
+    });
+    setSelectedBundleProdId(singleProducts[0]?.id || "");
+    setBundleItemQty(1);
+  };
+
+  // Add tier rule for single product
+  const handleAddTier = () => {
+    const currentTiers = formData.tier_pricing || [];
+    const nextQty = currentTiers.length > 0 ? Math.max(...currentTiers.map((t) => t.min_qty)) + 2 : 2;
+    const nextPrice = nextQty * formData.selling_price * 0.85; // default 15% discount
+    setFormData({
+      ...formData,
+      tier_pricing: [
+        ...currentTiers,
+        {
+          min_qty: nextQty,
+          price: Math.round(nextPrice / 1000) * 1000,
+          label: `Paket ${nextQty} pcs`,
+        },
+      ],
+    });
+  };
+
+  const handleRemoveTier = (index: number) => {
+    const currentTiers = formData.tier_pricing || [];
+    setFormData({
+      ...formData,
+      tier_pricing: currentTiers.filter((_, i) => i !== index),
+    });
+  };
+
+  const handleUpdateTier = (index: number, field: keyof TierPricing, value: any) => {
+    const currentTiers = [...(formData.tier_pricing || [])];
+    currentTiers[index] = { ...currentTiers[index], [field]: value };
+    setFormData({ ...formData, tier_pricing: currentTiers });
+  };
+
+  // Add component item to combo bundle
+  const handleAddBundleItem = () => {
+    if (!selectedBundleProdId) return;
+    const prod = products.find((p) => p.id === selectedBundleProdId);
+    if (!prod) return;
+
+    const currentItems = formData.bundle_items || [];
+    const existingIndex = currentItems.findIndex((it) => it.product_id === selectedBundleProdId);
+
+    let updatedItems: BundleItem[];
+    if (existingIndex >= 0) {
+      updatedItems = [...currentItems];
+      updatedItems[existingIndex].quantity += Number(bundleItemQty) || 1;
+    } else {
+      updatedItems = [
+        ...currentItems,
+        {
+          product_id: prod.id,
+          product_name: prod.name,
+          quantity: Number(bundleItemQty) || 1,
+          purchase_price: prod.purchase_price,
+          selling_price: prod.selling_price,
+        },
+      ];
+    }
+
+    // Recalculate bundle base cost and normal price
+    const totalCost = updatedItems.reduce((acc, it) => acc + it.purchase_price * it.quantity, 0);
+    const totalNormal = updatedItems.reduce((acc, it) => acc + it.selling_price * it.quantity, 0);
+
+    setFormData({
+      ...formData,
+      bundle_items: updatedItems,
+      purchase_price: totalCost,
+      selling_price: formData.selling_price > 0 ? formData.selling_price : Math.round((totalNormal * 0.85) / 1000) * 1000,
+    });
+    setBundleItemQty(1);
+  };
+
+  const handleRemoveBundleItem = (index: number) => {
+    const currentItems = formData.bundle_items || [];
+    const updatedItems = currentItems.filter((_, i) => i !== index);
+    const totalCost = updatedItems.reduce((acc, it) => acc + it.purchase_price * it.quantity, 0);
+
+    setFormData({
+      ...formData,
+      bundle_items: updatedItems,
+      purchase_price: totalCost,
     });
   };
 
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name.trim()) {
-      toast.error("Nama produk wajib diisi");
+      toast.error("Nama produk / paket wajib diisi");
+      return;
+    }
+    if (formData.type === "bundle" && (!formData.bundle_items || formData.bundle_items.length === 0)) {
+      toast.error("Paket Kombo harus memiliki minimal 1 barang di dalamnya");
       return;
     }
     if (formData.purchase_price < 0 || formData.selling_price < 0) {
@@ -163,6 +275,9 @@ export function ProductsPage() {
         const q = search.toLowerCase().trim();
         const matchesSearch = !q || name.includes(q) || desc.includes(q);
         if (!matchesSearch) return false;
+
+        if (stockFilter === "single") return p.type !== "bundle";
+        if (stockFilter === "bundle") return p.type === "bundle";
         if (stockFilter === "low") return (p.stock || 0) <= 10;
         if (stockFilter === "in_stock") return (p.stock || 0) > 0;
         return true;
@@ -186,27 +301,36 @@ export function ProductsPage() {
       });
   }, [products, search, sortBy, stockFilter]);
 
-  // Live preview profit calculations in modal
-  const modalProfit = calculateProfitPerPiece(formData.purchase_price, formData.selling_price);
-  const modalMargin = calculateMargin(formData.purchase_price, formData.selling_price);
+  // Live bundle metrics for modal
+  const bundleMetrics = useMemo(() => {
+    if (formData.type !== "bundle") return null;
+    return calculateBundleMetrics(formData.bundle_items || [], formData.selling_price);
+  }, [formData.type, formData.bundle_items, formData.selling_price]);
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-text-primary">Daftar Produk</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-text-primary">Daftar Produk & Bundling</h1>
           <p className="mt-1 text-sm text-text-secondary">
-            Kelola harga beli, harga jual, margin keuntungan, dan stok produk per pcs.
+            Kelola harga modal, harga jual satuan, aturan custom bundling grosir, dan paket kombo.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={handleOpenAdd}
+            onClick={() => handleOpenAdd("bundle")}
+            className="flex items-center gap-2 rounded-xl border border-emerald/30 bg-emerald/10 px-3.5 py-2.5 text-sm font-semibold text-emerald hover:bg-emerald/20 transition-all cursor-pointer"
+          >
+            <Layers className="h-4 w-4" />
+            <span>+ Buat Paket Kombo</span>
+          </button>
+          <button
+            onClick={() => handleOpenAdd("single")}
             className="flex items-center gap-2 rounded-xl bg-emerald px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-hover active:scale-[0.98] transition-all shadow-md shadow-emerald/20 cursor-pointer"
           >
             <Plus className="h-4 w-4" />
-            <span>Tambah Produk</span>
+            <span>+ Tambah Produk</span>
           </button>
         </div>
       </div>
@@ -220,7 +344,7 @@ export function ProductsPage() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Cari produk (contoh: Pin Bros, Stiker)..."
+            placeholder="Cari produk atau paket kombo..."
             className="w-full rounded-xl border border-border bg-card pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-emerald focus:outline-none focus:ring-1 focus:ring-emerald transition-colors"
           />
           {search && (
@@ -233,14 +357,16 @@ export function ProductsPage() {
           )}
         </div>
 
-        {/* Filter Stock & Sort */}
-        <div className="flex items-center gap-2">
+        {/* Filter Type & Stock & Sort */}
+        <div className="flex items-center gap-2 overflow-x-auto">
           <select
             value={stockFilter}
             onChange={(e) => setStockFilter(e.target.value as any)}
-            className="rounded-xl border border-border bg-card px-3.5 py-2.5 text-xs sm:text-sm text-text-primary focus:border-emerald focus:outline-none transition-colors cursor-pointer"
+            className="rounded-xl border border-border bg-card px-3.5 py-2.5 text-xs sm:text-sm text-text-primary focus:border-emerald focus:outline-none transition-colors cursor-pointer whitespace-nowrap"
           >
-            <option value="all">Semua Stok</option>
+            <option value="all">Semua Produk & Paket</option>
+            <option value="single">Produk Satuan</option>
+            <option value="bundle">📦 Paket Kombo</option>
             <option value="low">⚠️ Stok Menipis (≤10)</option>
             <option value="in_stock">Tersedia (&gt;0)</option>
           </select>
@@ -248,7 +374,7 @@ export function ProductsPage() {
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as any)}
-            className="rounded-xl border border-border bg-card px-3.5 py-2.5 text-xs sm:text-sm text-text-primary focus:border-emerald focus:outline-none transition-colors cursor-pointer"
+            className="rounded-xl border border-border bg-card px-3.5 py-2.5 text-xs sm:text-sm text-text-primary focus:border-emerald focus:outline-none transition-colors cursor-pointer whitespace-nowrap"
           >
             <option value="name">Urutkan: Nama A-Z</option>
             <option value="profit">Untung Terbesar / pcs</option>
@@ -277,11 +403,11 @@ export function ProductsPage() {
           <p className="mt-1 text-sm text-text-secondary max-w-sm">
             {search
               ? "Coba gunakan kata kunci pencarian yang lain."
-              : "Tambahkan produk pertama bisnis Anda untuk mulai mencatat stok dan penjualan."}
+              : "Tambahkan produk satuan atau paket kombo bundling untuk mulai mencatat stok dan penjualan."}
           </p>
-          <div className="mt-5">
+          <div className="mt-5 flex gap-2">
             <button
-              onClick={handleOpenAdd}
+              onClick={() => handleOpenAdd("single")}
               className="flex items-center gap-2 rounded-xl bg-emerald px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-hover transition-colors shadow-md shadow-emerald/20 cursor-pointer"
             >
               <Plus className="h-4 w-4" />
@@ -296,26 +422,45 @@ export function ProductsPage() {
             const sellingPrice = Number(p.selling_price) || 0;
             const currentStock = Number(p.stock) || 0;
             const soldCount = Number(p.total_sold) || 0;
+            const isBundle = p.type === "bundle";
 
             const profitPerPcs = calculateProfitPerPiece(purchasePrice, sellingPrice);
             const margin = calculateMargin(purchasePrice, sellingPrice);
             const isLowStock = currentStock <= 10 && currentStock > 0;
             const isOutOfStock = currentStock === 0;
+            const hasTiers = p.tier_pricing && p.tier_pricing.length > 0;
 
             return (
               <div
                 key={p.id}
-                className="group relative flex flex-col justify-between rounded-2xl border border-border bg-card p-5 hover:border-emerald/40 hover:shadow-lg transition-all"
+                className={`group relative flex flex-col justify-between rounded-2xl border p-5 transition-all duration-200 hover:shadow-lg ${
+                  isBundle
+                    ? "border-emerald/40 bg-card hover:border-emerald/60"
+                    : "border-border bg-card hover:border-emerald/40"
+                }`}
               >
-                {/* Top Bar: Name & Actions */}
                 <div>
+                  {/* Card Header & Badges */}
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <h3 className="text-base font-bold text-text-primary truncate" title={p.name}>
-                        {p.name}
-                      </h3>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <h3 className="font-bold text-text-primary text-base truncate" title={p.name}>
+                          {p.name}
+                        </h3>
+                        {isBundle ? (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-emerald/15 px-2 py-0.5 text-[10px] font-extrabold text-emerald uppercase tracking-wider border border-emerald/30">
+                            <Layers className="h-3 w-3" />
+                            Paket Kombo
+                          </span>
+                        ) : hasTiers ? (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-amber/15 px-2 py-0.5 text-[10px] font-extrabold text-amber uppercase tracking-wider border border-amber/30">
+                            <Tag className="h-3 w-3" />
+                            Promo Bundling
+                          </span>
+                        ) : null}
+                      </div>
                       {p.description && (
-                        <p className="mt-0.5 text-xs text-text-muted truncate">
+                        <p className="mt-0.5 text-xs text-text-muted line-clamp-1" title={p.description}>
                           {p.description}
                         </p>
                       )}
@@ -323,13 +468,15 @@ export function ProductsPage() {
 
                     {/* Action buttons */}
                     <div className="flex items-center gap-1 opacity-90 group-hover:opacity-100 transition-opacity">
-                      <button
-                        onClick={() => setRestockingProduct(p)}
-                        title="Tambah Stok"
-                        className="rounded-lg p-1.5 text-text-muted hover:bg-emerald/10 hover:text-emerald transition-colors cursor-pointer"
-                      >
-                        <PlusCircle className="h-4 w-4" />
-                      </button>
+                      {!isBundle && (
+                        <button
+                          onClick={() => setRestockingProduct(p)}
+                          title="Tambah Stok"
+                          className="rounded-lg p-1.5 text-text-muted hover:bg-emerald/10 hover:text-emerald transition-colors cursor-pointer"
+                        >
+                          <PlusCircle className="h-4 w-4" />
+                        </button>
+                      )}
                       <button
                         onClick={() => handleOpenEdit(p)}
                         title="Edit Produk"
@@ -347,16 +494,54 @@ export function ProductsPage() {
                     </div>
                   </div>
 
+                  {/* Bundle Included Items Details */}
+                  {isBundle && p.bundle_items && p.bundle_items.length > 0 && (
+                    <div className="mt-3 rounded-xl bg-elevated/40 p-2.5 border border-border/60">
+                      <span className="text-[10px] font-bold text-text-muted uppercase tracking-wider block mb-1">
+                        Isi Paket Kombo:
+                      </span>
+                      <div className="space-y-1">
+                        {p.bundle_items.map((it, idx) => (
+                          <div key={idx} className="flex items-center justify-between text-xs text-text-secondary">
+                            <span>• {it.quantity}x {it.product_name}</span>
+                            <span className="text-[11px] text-text-muted">
+                              (Modal: {formatCurrency(it.purchase_price * it.quantity)})
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Tier Pricing Badges for Single Products */}
+                  {!isBundle && hasTiers && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {p.tier_pricing?.map((t, idx) => (
+                        <span
+                          key={idx}
+                          className="inline-flex items-center gap-1 rounded-lg bg-emerald/10 px-2 py-0.5 text-[11px] font-semibold text-emerald border border-emerald/20"
+                        >
+                          <Tag className="h-3 w-3" />
+                          Beli {t.min_qty} pcs: <strong>{formatCurrency(t.price)}</strong>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
                   {/* Pricing Grid */}
                   <div className="mt-4 grid grid-cols-2 gap-2 rounded-xl bg-elevated/60 p-3">
                     <div>
-                      <span className="text-[11px] font-medium text-text-muted uppercase">Harga Beli</span>
+                      <span className="text-[11px] font-medium text-text-muted uppercase">
+                        {isBundle ? "Total Modal Pokok" : "Harga Beli"}
+                      </span>
                       <p className="text-sm font-semibold tabular-nums text-text-secondary">
                         {formatCurrency(purchasePrice)}
                       </p>
                     </div>
                     <div>
-                      <span className="text-[11px] font-medium text-text-muted uppercase">Harga Jual</span>
+                      <span className="text-[11px] font-medium text-text-muted uppercase">
+                        {isBundle ? "Harga Paket" : "Harga Jual Satuan"}
+                      </span>
                       <p className="text-sm font-bold tabular-nums text-text-primary">
                         {formatCurrency(sellingPrice)}
                       </p>
@@ -369,7 +554,7 @@ export function ProductsPage() {
                       <span className="text-xs text-text-muted">Keuntungan:</span>
                       <p className="text-sm font-bold tabular-nums text-emerald">
                         +{formatCurrency(profitPerPcs)}
-                        <span className="text-[11px] font-normal text-text-muted"> / pcs</span>
+                        <span className="text-[11px] font-normal text-text-muted"> {isBundle ? "/ paket" : "/ pcs"}</span>
                       </p>
                     </div>
                     <div className="text-right">
@@ -396,24 +581,24 @@ export function ProductsPage() {
                       {isOutOfStock ? (
                         <>
                           <AlertTriangle className="h-3 w-3" />
-                          Habis (0 pcs)
+                          Habis (0 {isBundle ? "paket" : "pcs"})
                         </>
                       ) : isLowStock ? (
                         <>
                           <AlertTriangle className="h-3 w-3" />
-                          Stok: {formatNumber(currentStock)} pcs
+                          Stok: {formatNumber(currentStock)} {isBundle ? "paket" : "pcs"}
                         </>
                       ) : (
                         <>
                           <CheckCircle2 className="h-3 w-3" />
-                          Stok: {formatNumber(currentStock)} pcs
+                          Stok: {formatNumber(currentStock)} {isBundle ? "paket" : "pcs"}
                         </>
                       )}
                     </span>
                   </div>
 
                   <span className="text-xs text-text-muted tabular-nums">
-                    Terjual: <strong>{formatNumber(soldCount)}</strong> pcs
+                    Terjual: <strong>{formatNumber(soldCount)}</strong> {isBundle ? "paket" : "pcs"}
                   </span>
                 </div>
               </div>
@@ -440,12 +625,17 @@ export function ProductsPage() {
               initial={{ opacity: 0, scale: 0.95, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              className="relative z-10 w-full max-w-lg rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-2xl max-h-[90vh] overflow-y-auto"
+              className="relative z-10 w-full max-w-xl rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-2xl max-h-[90vh] overflow-y-auto"
             >
               <div className="flex items-center justify-between border-b border-border pb-4">
-                <h3 className="text-lg font-bold text-text-primary">
-                  {editingProduct ? "Edit Data Produk" : "Tambah Produk Baru"}
-                </h3>
+                <div>
+                  <h3 className="text-lg font-bold text-text-primary">
+                    {editingProduct ? "Edit Data Produk / Bundling" : "Tambah Produk / Paket Bundling"}
+                  </h3>
+                  <p className="text-xs text-text-muted mt-0.5">
+                    Konfigurasikan produk satuan atau paket kombo bundling multi-barang.
+                  </p>
+                </div>
                 <button
                   onClick={() => {
                     setIsAddModalOpen(false);
@@ -457,17 +647,69 @@ export function ProductsPage() {
                 </button>
               </div>
 
+              {/* Product Type Selector (Single vs Combo Bundle) */}
+              {!editingProduct && (
+                <div className="mt-4 grid grid-cols-2 gap-2 rounded-xl bg-elevated/70 p-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFormData({
+                        ...formData,
+                        type: "single",
+                        purchase_price: 3000,
+                        selling_price: 7000,
+                        bundle_items: [],
+                      })
+                    }
+                    className={`flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      formData.type === "single"
+                        ? "bg-card text-emerald shadow-xs border border-border"
+                        : "text-text-muted hover:text-text-primary"
+                    }`}
+                  >
+                    <Package className="h-4 w-4" />
+                    <span>Produk Satuan</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFormData({
+                        ...formData,
+                        type: "bundle",
+                        tier_pricing: [],
+                        purchase_price: 0,
+                        selling_price: 0,
+                      })
+                    }
+                    className={`flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      formData.type === "bundle"
+                        ? "bg-card text-emerald shadow-xs border border-border"
+                        : "text-text-muted hover:text-text-primary"
+                    }`}
+                  >
+                    <Layers className="h-4 w-4" />
+                    <span>📦 Paket Kombo Campuran</span>
+                  </button>
+                </div>
+              )}
+
               <form onSubmit={handleSaveProduct} className="mt-4 space-y-4">
                 {/* Product Name */}
                 <div>
                   <label className="block text-xs font-semibold text-text-secondary uppercase mb-1">
-                    Nama Produk <span className="text-error">*</span>
+                    {formData.type === "bundle" ? "Nama Paket Kombo" : "Nama Produk"}{" "}
+                    <span className="text-error">*</span>
                   </label>
                   <input
                     type="text"
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    placeholder="Contoh: Pin Bros 44mm"
+                    placeholder={
+                      formData.type === "bundle"
+                        ? "Contoh: Paket Hemat Pin + Stiker"
+                        : "Contoh: Stiker Vinyl / Pin Bros"
+                    }
                     required
                     className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-emerald focus:outline-none focus:ring-1 focus:ring-emerald transition-colors"
                   />
@@ -482,20 +724,104 @@ export function ProductsPage() {
                     type="text"
                     value={formData.description}
                     onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    placeholder="Contoh: Desain custom laminasi doff"
+                    placeholder="Contoh: Termasuk 1 Pin Bros dan 2 Stiker Custom"
                     className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-emerald focus:outline-none transition-colors"
                   />
                 </div>
 
-                {/* Price Row: Purchase vs Selling */}
+                {/* ================= IF COMBO BUNDLE: SELECT COMPONENT ITEMS ================= */}
+                {formData.type === "bundle" && (
+                  <div className="rounded-xl border border-emerald/30 bg-emerald/5 p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-emerald uppercase tracking-wider flex items-center gap-1.5">
+                        <Boxes className="h-4 w-4" />
+                        Komponen Isi Paket Kombo
+                      </span>
+                      <span className="text-[11px] text-text-muted">
+                        {formData.bundle_items?.length || 0} barang terpilih
+                      </span>
+                    </div>
+
+                    {/* Item Picker Row */}
+                    <div className="flex gap-2 items-center">
+                      <select
+                        value={selectedBundleProdId}
+                        onChange={(e) => setSelectedBundleProdId(e.target.value)}
+                        className="flex-1 rounded-xl border border-border bg-card px-3 py-2 text-xs text-text-primary focus:border-emerald focus:outline-none cursor-pointer"
+                      >
+                        {singleProducts.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} (Modal: {formatCurrency(p.purchase_price)}, Normal: {formatCurrency(p.selling_price)})
+                          </option>
+                        ))}
+                      </select>
+
+                      <div className="w-20">
+                        <input
+                          type="number"
+                          min="1"
+                          value={bundleItemQty}
+                          onChange={(e) => setBundleItemQty(Math.max(1, Number(e.target.value)))}
+                          className="w-full rounded-xl border border-border bg-card px-2.5 py-2 text-xs text-center font-bold text-text-primary focus:border-emerald focus:outline-none"
+                          placeholder="Qty"
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleAddBundleItem}
+                        className="rounded-xl bg-emerald px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-hover transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        + Tambah
+                      </button>
+                    </div>
+
+                    {/* Selected Component Items List */}
+                    <div className="space-y-1.5 pt-1">
+                      {formData.bundle_items && formData.bundle_items.length > 0 ? (
+                        formData.bundle_items.map((it, idx) => (
+                          <div
+                            key={idx}
+                            className="flex items-center justify-between rounded-lg bg-card p-2.5 border border-border text-xs"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="flex h-5 w-5 items-center justify-center rounded-md bg-emerald/10 font-bold text-emerald text-[11px]">
+                                {it.quantity}x
+                              </span>
+                              <strong className="text-text-primary">{it.product_name}</strong>
+                              <span className="text-text-muted text-[11px]">
+                                (Modal: {formatCurrency(it.purchase_price * it.quantity)})
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveBundleItem(idx)}
+                              className="text-text-muted hover:text-error transition-colors p-1"
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-xs text-text-muted text-center py-2">
+                          Pilih produk satuan di atas lalu klik "+ Tambah" untuk memasukkannya ke dalam paket ini.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Pricing Inputs */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-semibold text-text-secondary uppercase mb-1">
-                      Harga Beli / pcs (Rp) <span className="text-error">*</span>
+                      {formData.type === "bundle" ? "Total Modal Pokok Paket (Rp)" : "Harga Beli / pcs (Rp)"}{" "}
+                      <span className="text-error">*</span>
                     </label>
                     <input
                       type="number"
                       min="0"
+                      disabled={formData.type === "bundle"}
                       value={formData.purchase_price === 0 ? "" : formData.purchase_price}
                       onChange={(e) =>
                         setFormData({
@@ -505,12 +831,21 @@ export function ProductsPage() {
                       }
                       placeholder="0"
                       required
-                      className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm text-text-primary tabular-nums focus:border-emerald focus:outline-none transition-colors"
+                      className={`w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm text-text-primary tabular-nums focus:border-emerald focus:outline-none transition-colors ${
+                        formData.type === "bundle" ? "opacity-75 cursor-not-allowed bg-elevated/40" : ""
+                      }`}
                     />
+                    {formData.type === "bundle" && (
+                      <span className="text-[10px] text-text-muted mt-0.5 block">
+                        Otomatis dihitung dari total harga beli barang di dalamnya.
+                      </span>
+                    )}
                   </div>
+
                   <div>
                     <label className="block text-xs font-semibold text-text-secondary uppercase mb-1">
-                      Harga Jual / pcs (Rp) <span className="text-error">*</span>
+                      {formData.type === "bundle" ? "Harga Jual Paket Bundling (Rp)" : "Harga Jual Satuan / pcs (Rp)"}{" "}
+                      <span className="text-error">*</span>
                     </label>
                     <input
                       type="number"
@@ -524,15 +859,56 @@ export function ProductsPage() {
                       }
                       placeholder="0"
                       required
-                      className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm text-text-primary tabular-nums focus:border-emerald focus:outline-none transition-colors"
+                      className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm font-bold text-text-primary tabular-nums focus:border-emerald focus:outline-none transition-colors"
                     />
                   </div>
                 </div>
 
-                {/* Initial Stock */}
+                {/* Live Profit Preview Box */}
+                {formData.type === "bundle" && bundleMetrics ? (
+                  <div className="rounded-xl bg-elevated/80 p-3.5 border border-border space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-text-muted">Harga Normal Satuan (Total):</span>
+                      <span className="font-semibold text-text-secondary line-through tabular-nums">
+                        {formatCurrency(bundleMetrics.totalNormalPrice)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-emerald font-semibold">Harga Paket Bundling:</span>
+                      <strong className="text-sm font-bold text-emerald tabular-nums">
+                        {formatCurrency(formData.selling_price)}
+                      </strong>
+                    </div>
+                    <div className="flex items-center justify-between text-xs border-t border-border/60 pt-1.5">
+                      <span className="text-text-muted">Keuntungan Bersih Paket:</span>
+                      <strong className="text-emerald font-bold tabular-nums">
+                        +{formatCurrency(bundleMetrics.bundleProfit)} ({formatMargin(bundleMetrics.margin)})
+                      </strong>
+                    </div>
+                    {bundleMetrics.discountAmount > 0 && (
+                      <div className="flex items-center justify-between text-xs text-amber font-semibold">
+                        <span>Hemat Pembeli:</span>
+                        <span>
+                          Diskon {formatCurrency(bundleMetrics.discountAmount)} ({bundleMetrics.discountPercent.toFixed(1)}%)
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-xl bg-elevated/50 p-3 flex items-center justify-between text-xs border border-border">
+                    <span className="text-text-muted">Keuntungan Satuan:</span>
+                    <strong className="text-emerald font-bold tabular-nums">
+                      +{formatCurrency(calculateProfitPerPiece(formData.purchase_price, formData.selling_price))} (
+                      {formatMargin(calculateMargin(formData.purchase_price, formData.selling_price))})
+                    </strong>
+                  </div>
+                )}
+
+                {/* Stock Input */}
                 <div>
                   <label className="block text-xs font-semibold text-text-secondary uppercase mb-1">
-                    Jumlah Stok Awal (pcs) <span className="text-error">*</span>
+                    {formData.type === "bundle" ? "Stok Paket Kombo Siap Jual" : "Jumlah Stok (pcs)"}{" "}
+                    <span className="text-error">*</span>
                   </label>
                   <input
                     type="number"
@@ -548,43 +924,120 @@ export function ProductsPage() {
                     required
                     className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm text-text-primary tabular-nums focus:border-emerald focus:outline-none transition-colors"
                   />
-                </div>
-
-                {/* Live Profit Preview Box */}
-                <div className="rounded-xl border border-emerald/20 bg-emerald/10 p-3.5 text-xs text-text-secondary space-y-1.5">
-                  <div className="flex justify-between">
-                    <span>Estimasi Untung Bersih:</span>
-                    <strong className="text-emerald tabular-nums">
-                      +{formatCurrency(modalProfit)} / pcs
-                    </strong>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Margin Keuntungan:</span>
-                    <strong className="text-emerald tabular-nums">{formatMargin(modalMargin)}</strong>
-                  </div>
-                  <div className="flex justify-between text-[11px] text-text-muted">
-                    <span>Total Nilai Modal Stok ({formData.stock} pcs):</span>
-                    <span className="tabular-nums">
-                      {formatCurrency(formData.purchase_price * formData.stock)}
+                  {formData.type === "bundle" && (
+                    <span className="text-[10px] text-text-muted mt-0.5 block">
+                      Catatan: Saat paket terjual, stok masing-masing komponen produk juga akan otomatis berkurang.
                     </span>
-                  </div>
+                  )}
                 </div>
 
-                {/* Buttons */}
-                <div className="flex justify-end gap-3 pt-2">
+                {/* ================= IF SINGLE PRODUCT: TIER / QUANTITY BUNDLING ================= */}
+                {formData.type === "single" && (
+                  <div className="rounded-xl border border-border bg-elevated/40 p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h4 className="text-xs font-bold text-text-primary uppercase tracking-wider flex items-center gap-1.5">
+                          <Tag className="h-4 w-4 text-amber" />
+                          Aturan Promo Bundling / Grosir (Opsional)
+                        </h4>
+                        <p className="text-[11px] text-text-muted">
+                          Contoh: Satuan Rp7.000, tapi beli 2 pcs dapat Rp10.000.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleAddTier}
+                        className="rounded-lg bg-emerald/10 border border-emerald/20 px-2.5 py-1 text-xs font-bold text-emerald hover:bg-emerald/20 transition-colors cursor-pointer"
+                      >
+                        + Tambah Tier
+                      </button>
+                    </div>
+
+                    {formData.tier_pricing && formData.tier_pricing.length > 0 ? (
+                      <div className="space-y-2 pt-1">
+                        {formData.tier_pricing.map((tier, idx) => {
+                          const normalTotal = formData.selling_price * tier.min_qty;
+                          const savings = Math.max(0, normalTotal - tier.price);
+                          const profit = tier.price - formData.purchase_price * tier.min_qty;
+
+                          return (
+                            <div
+                              key={idx}
+                              className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl bg-card p-3 border border-border"
+                            >
+                              <div className="flex items-center gap-2 flex-1">
+                                <span className="text-xs font-bold text-text-muted uppercase whitespace-nowrap">
+                                  Beli:
+                                </span>
+                                <input
+                                  type="number"
+                                  min="2"
+                                  value={tier.min_qty === 0 ? "" : tier.min_qty}
+                                  onChange={(e) =>
+                                    handleUpdateTier(idx, "min_qty", Math.max(2, Number(e.target.value)))
+                                  }
+                                  className="w-16 rounded-lg border border-border bg-elevated px-2 py-1 text-xs text-center font-bold text-text-primary focus:border-emerald focus:outline-none"
+                                />
+                                <span className="text-xs text-text-muted font-semibold">pcs =</span>
+
+                                <div className="flex-1 min-w-[120px]">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    value={tier.price === 0 ? "" : tier.price}
+                                    onChange={(e) =>
+                                      handleUpdateTier(idx, "price", Math.max(0, Number(e.target.value)))
+                                    }
+                                    placeholder="Total Rp"
+                                    className="w-full rounded-lg border border-border bg-elevated px-2.5 py-1 text-xs font-bold text-emerald focus:border-emerald focus:outline-none tabular-nums"
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="flex items-center justify-between sm:justify-end gap-3">
+                                <div className="text-right text-[11px]">
+                                  <span className="text-emerald font-semibold block">
+                                    Untung: +{formatCurrency(profit)}
+                                  </span>
+                                  {savings > 0 && (
+                                    <span className="text-amber">Hemat: {formatCurrency(savings)}</span>
+                                  )}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveTier(idx)}
+                                  className="text-text-muted hover:text-error transition-colors p-1"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-text-muted text-center py-1">
+                        Belum ada aturan harga grosir. Klik "+ Tambah Tier" untuk membuat promo beli banyak lebih murah.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Form Buttons */}
+                <div className="flex justify-end gap-3 pt-4 border-t border-border">
                   <button
                     type="button"
                     onClick={() => {
                       setIsAddModalOpen(false);
                       setEditingProduct(null);
                     }}
-                    className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-elevated hover:text-text-primary transition-colors cursor-pointer"
+                    className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-elevated cursor-pointer"
                   >
                     Batal
                   </button>
                   <button
                     type="submit"
-                    className="rounded-xl bg-emerald px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-hover transition-colors shadow-md shadow-emerald/20 cursor-pointer"
+                    className="rounded-xl bg-emerald px-6 py-2.5 text-sm font-semibold text-white hover:bg-emerald-hover active:scale-[0.98] transition-all shadow-md shadow-emerald/20 cursor-pointer"
                   >
                     {editingProduct ? "Simpan Perubahan" : "Simpan Produk"}
                   </button>
@@ -610,11 +1063,14 @@ export function ProductsPage() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-2xl max-h-[90vh] overflow-y-auto"
+              className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-2xl"
             >
-              <h3 className="text-lg font-bold text-text-primary">Tambah Stok Produk</h3>
-              <p className="mt-1 text-sm text-text-secondary">
-                Produk: <strong>{restockingProduct.name}</strong> (Stok saat ini: {restockingProduct.stock} pcs)
+              <h3 className="text-lg font-bold text-text-primary">
+                Tambah Stok: {restockingProduct.name}
+              </h3>
+              <p className="mt-1 text-xs text-text-secondary">
+                Stok saat ini:{" "}
+                <strong className="text-text-primary">{formatNumber(restockingProduct.stock)} pcs</strong>
               </p>
 
               <form onSubmit={handleRestockSubmit} className="mt-4 space-y-4">
@@ -631,50 +1087,34 @@ export function ProductsPage() {
                     }
                     placeholder="0"
                     required
-                    className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm text-text-primary tabular-nums focus:border-emerald focus:outline-none"
+                    className="w-full rounded-xl border border-border bg-elevated px-4 py-2.5 text-sm font-bold text-text-primary tabular-nums focus:border-emerald focus:outline-none"
                   />
                 </div>
 
-                {/* Quick preset buttons */}
                 <div className="flex gap-2">
                   {[10, 25, 50, 100].map((qty) => (
                     <button
                       key={qty}
                       type="button"
                       onClick={() => setRestockAmount(qty)}
-                      className="flex-1 rounded-lg border border-border bg-elevated/60 py-1.5 text-xs font-medium text-text-secondary hover:bg-emerald/10 hover:text-emerald hover:border-emerald/30 transition-colors cursor-pointer"
+                      className="flex-1 rounded-lg border border-border bg-elevated/60 py-1.5 text-xs font-semibold text-text-secondary hover:text-text-primary hover:border-emerald cursor-pointer"
                     >
                       +{qty}
                     </button>
                   ))}
                 </div>
 
-                <div className="rounded-xl bg-elevated/60 p-3 text-xs text-text-secondary space-y-1">
-                  <div className="flex justify-between">
-                    <span>Stok Baru:</span>
-                    <strong className="text-emerald tabular-nums">
-                      {(restockingProduct.stock || 0) + restockAmount} pcs
-                    </strong>
-                  </div>
-                  <div className="flex justify-between text-text-muted">
-                    <span>Estimasi Modal Tambahan:</span>
-                    <span className="tabular-nums">
-                      {formatCurrency((restockingProduct.purchase_price || 0) * restockAmount)}
-                    </span>
-                  </div>
-                </div>
-
                 <div className="flex justify-end gap-3 pt-2">
                   <button
                     type="button"
                     onClick={() => setRestockingProduct(null)}
-                    className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-elevated cursor-pointer"
+                    className="rounded-xl border border-border px-4 py-2 text-sm font-medium text-text-secondary hover:bg-elevated cursor-pointer"
                   >
                     Batal
                   </button>
                   <button
                     type="submit"
-                    className="rounded-xl bg-emerald px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-hover shadow-md shadow-emerald/20 cursor-pointer"
+                    className="rounded-xl bg-emerald px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-hover cursor-pointer"
                   >
                     Tambah Stok
                   </button>
@@ -702,29 +1142,22 @@ export function ProductsPage() {
               exit={{ opacity: 0, scale: 0.95 }}
               className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-2xl"
             >
-              <div className="flex items-center gap-3 text-error">
-                <div className="rounded-xl bg-error/10 p-2.5">
-                  <AlertTriangle className="h-6 w-6" />
-                </div>
-                <h3 className="text-lg font-bold text-text-primary">Hapus Produk?</h3>
-              </div>
-              <p className="mt-3 text-sm text-text-secondary">
-                Apakah Anda yakin ingin menghapus <strong>"{deletingProduct.name}"</strong>? Data transaksi historis tetap tersimpan.
+              <h3 className="text-lg font-bold text-text-primary">Hapus Produk?</h3>
+              <p className="mt-2 text-sm text-text-secondary">
+                Apakah Anda yakin ingin menghapus <strong>"{deletingProduct.name}"</strong>?
               </p>
               <div className="mt-6 flex justify-end gap-3">
                 <button
-                  type="button"
                   onClick={() => setDeletingProduct(null)}
-                  className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-elevated cursor-pointer"
+                  className="rounded-xl border border-border px-4 py-2 text-sm font-medium text-text-secondary hover:bg-elevated cursor-pointer"
                 >
                   Batal
                 </button>
                 <button
-                  type="button"
                   onClick={handleDeleteConfirm}
-                  className="rounded-xl bg-error px-5 py-2.5 text-sm font-semibold text-white hover:bg-error-hover transition-colors cursor-pointer"
+                  className="rounded-xl bg-error px-5 py-2 text-sm font-semibold text-white hover:bg-error-hover cursor-pointer"
                 >
-                  Ya, Hapus
+                  Hapus
                 </button>
               </div>
             </motion.div>
